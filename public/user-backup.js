@@ -90,6 +90,27 @@ function validateContent(value = {}) {
   return result;
 }
 
+function validateCoverSource(value) {
+  if (value == null) return null;
+  const source = record(value, 'cover-source');
+  const url = text(source.url || '', 2000, 'cover-source-url');
+  const status = text(source.status, 16, 'cover-source-status', { required: true });
+  const checkedAt = text(source.checkedAt || '', 64, 'cover-source-date');
+  if (!['verified', 'dead', 'pending', 'wrong'].includes(status)) throw new Error('invalid-cover-source');
+  if (status === 'wrong' && url) throw new Error('invalid-cover-source');
+  if (status !== 'wrong') {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error('invalid-cover-source-url');
+    }
+    if (parsed.protocol !== 'https:') throw new Error('invalid-cover-source');
+  }
+  if (checkedAt && !Number.isFinite(Date.parse(checkedAt))) throw new Error('invalid-cover-source-date');
+  return { url, status, checkedAt };
+}
+
 function validateCustomTitles(value) {
   if (!Array.isArray(value) || value.length > 5000) throw new Error('invalid-custom-titles');
   const seen = new Set();
@@ -132,8 +153,21 @@ function validateCustomTitles(value) {
       },
     };
     if (item.contentEstimated === true) normalized.contentEstimated = true;
+    const coverSource = validateCoverSource(item.coverSource);
+    if (coverSource) normalized.coverSource = coverSource;
     return normalized;
   });
+}
+
+function validateCoverOverrides(value = {}) {
+  return Object.fromEntries(
+    entries(value, 'cover-overrides', 5000).map(([id, source]) => {
+      safeId(id, 'cover-override-id');
+      const normalized = validateCoverSource(source);
+      if (!normalized) throw new Error('invalid-cover-source');
+      return [id, normalized];
+    }),
+  );
 }
 
 function validateSources(value) {
@@ -178,6 +212,17 @@ function validateEpisodeProgress(value) {
   );
 }
 
+function validateFranchiseProgress(value) {
+  return Object.fromEntries(
+    entries(value, 'franchise-progress', 50_000).map(([id, watched]) => {
+      if (typeof id !== 'string' || !/^[A-Za-z0-9._:-]{1,240}$/.test(id))
+        throw new Error('invalid-franchise-step');
+      if (watched !== true) throw new Error('invalid-franchise-step-state');
+      return [id, true];
+    }),
+  );
+}
+
 function validateUI(value) {
   const source = record(value, 'ui');
   const result = {};
@@ -187,17 +232,40 @@ function validateUI(value) {
     'tierFilter',
     'typeFilter',
     'genreFilter',
+    'regionFilter',
+    'countryFilter',
     'statusFilter',
     'sortSelect',
+    'westernSearch',
+    'westernTierFilter',
+    'westernTypeFilter',
+    'westernGenreFilter',
+    'westernRegionFilter',
+    'westernCountryFilter',
+    'westernStatusFilter',
+    'westernSort',
     'adultSearch',
     'adultTierFilter',
     'adultTypeFilter',
     'adultGenreFilter',
+    'adultRegionFilter',
+    'adultCountryFilter',
     'adultStatusFilter',
     'adultSort',
+    'kidsSearch',
+    'kidsTierFilter',
+    'kidsTypeFilter',
+    'kidsGenreFilter',
+    'kidsRegionFilter',
+    'kidsCountryFilter',
+    'kidsStatusFilter',
+    'kidsSort',
     'collectionSearch',
     'franchiseSearch',
     'favoriteSearch',
+    'favoriteSort',
+    'favoriteRegionFilter',
+    'favoriteCountryFilter',
   ];
   for (const key of strings) {
     if (typeof source[key] === 'string') result[key] = uiText(source[key], 500, `ui-${key}`);
@@ -207,7 +275,21 @@ function validateUI(value) {
     result.ratingFormat = source.ratingFormat;
   }
   if (source.collectionSort !== undefined) {
-    if (!['rating', 'release', 'name'].includes(source.collectionSort))
+    if (
+      ![
+        'rank',
+        'overall',
+        'production',
+        'story',
+        'emotional',
+        'year',
+        'title',
+        'myrating',
+        'rating',
+        'release',
+        'name',
+      ].includes(source.collectionSort)
+    )
       throw new Error('invalid-collection-sort');
     result.collectionSort = source.collectionSort;
   }
@@ -224,10 +306,69 @@ function validateUI(value) {
     if (!['asc', 'desc'].includes(source.adultSortOrder)) throw new Error('invalid-adult-sort-order');
     result.adultSortOrder = source.adultSortOrder;
   }
-  for (const key of ['hideCompleted', 'customOnly']) {
+  if (source.westernSortOrder !== undefined) {
+    if (!['asc', 'desc'].includes(source.westernSortOrder)) throw new Error('invalid-western-sort-order');
+    result.westernSortOrder = source.westernSortOrder;
+  }
+  if (source.kidsSortOrder !== undefined) {
+    if (!['asc', 'desc'].includes(source.kidsSortOrder)) throw new Error('invalid-kids-sort-order');
+    result.kidsSortOrder = source.kidsSortOrder;
+  }
+  if (source.favoriteSortOrder !== undefined) {
+    if (!['asc', 'desc'].includes(source.favoriteSortOrder)) throw new Error('invalid-favorite-sort-order');
+    result.favoriteSortOrder = source.favoriteSortOrder;
+  }
+  for (const key of [
+    'hideCompleted',
+    'customOnly',
+    'westernHideCompleted',
+    'westernCustomOnly',
+    'westernCompact',
+    'kidsHideCompleted',
+    'kidsCustomOnly',
+    'kidsCompact',
+  ]) {
     if (typeof source[key] === 'boolean') result[key] = source[key];
   }
   return result;
+}
+
+function validateTranslations(value) {
+  if (value === undefined || value === null)
+    return { locale: 'en', source: 'english', pack: null, officialUpdates: {}, officialCheck: {} };
+  const source = record(value, 'translations');
+  const locale = typeof source.locale === 'string' ? source.locale : 'en';
+  if (!/^[a-z]{2,3}(?:-[A-Z]{2})?$/.test(locale)) throw new Error('invalid-translation-locale');
+  const translationSource = ['english', 'local', 'official'].includes(source.source)
+    ? source.source
+    : source.pack
+      ? 'local'
+      : 'english';
+  const officialUpdates = {};
+  if (source.officialUpdates !== undefined) {
+    for (const [key, pack] of entries(source.officialUpdates, 'official-translation-updates', 200)) {
+      if (!/^[a-z]{2,3}(?:-[A-Z]{2})?$/.test(key)) throw new Error('invalid-translation-locale');
+      const validated = validateTranslationPack(pack);
+      if (validated.locale !== key || validated.revision < 1)
+        throw new Error('invalid-official-translation-update');
+      officialUpdates[key] = validated;
+    }
+  }
+  const officialCheck = {};
+  if (source.officialCheck !== undefined) {
+    for (const [key, checkedAt] of entries(source.officialCheck, 'official-translation-checks', 200)) {
+      if (!/^[a-z]{2,3}(?:-[A-Z]{2})?$/.test(key) || !Number.isFinite(Number(checkedAt)))
+        throw new Error('invalid-official-translation-check');
+      officialCheck[key] = Number(checkedAt);
+    }
+  }
+  return {
+    locale,
+    source: translationSource,
+    pack: source.pack ? validateTranslationPack(source.pack) : null,
+    officialUpdates,
+    officialCheck,
+  };
 }
 
 export function validateUserBackup(input) {
@@ -246,8 +387,11 @@ export function validateUserBackup(input) {
       sources: validateSources(data.sources || {}),
       favorites: validateFavorites(data.favorites || {}),
       episodeProgress: validateEpisodeProgress(data.episodeProgress || {}),
+      franchiseProgress: validateFranchiseProgress(data.franchiseProgress || {}),
+      coverOverrides: validateCoverOverrides(data.coverOverrides || {}),
       ui: validateUI(data.ui || {}),
       compact: data.compact === true,
+      translations: validateTranslations(data.translations),
     },
   };
 }
@@ -288,8 +432,16 @@ export function combineUserData(current, incoming, mode = 'merge') {
     sources: { ...currentData.sources, ...incomingData.sources },
     favorites: { ...currentData.favorites, ...incomingData.favorites },
     episodeProgress: mergeEpisodeProgress(currentData.episodeProgress, incomingData.episodeProgress),
+    franchiseProgress: { ...currentData.franchiseProgress, ...incomingData.franchiseProgress },
+    coverOverrides: { ...currentData.coverOverrides, ...incomingData.coverOverrides },
     ui: { ...currentData.ui, ...incomingData.ui },
     compact: incomingData.compact,
+    translations:
+      incomingData.translations.source !== 'english' ||
+      incomingData.translations.pack ||
+      Object.keys(incomingData.translations.officialUpdates || {}).length
+        ? incomingData.translations
+        : currentData.translations,
   };
 }
 
@@ -309,3 +461,4 @@ export function summarizeUserData(data) {
     sources: Object.keys(normalized.sources).length,
   };
 }
+import { validateTranslationPack } from './i18n.js';

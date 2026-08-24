@@ -3,9 +3,10 @@
 node_modules/
 covers/
 data/covers/
-public/catalog.json
+data/local/
 public/assets/theme-frames/
 data/catalog-source.json.next
+data/catalog.sqlite
 .DS_Store
 Thumbs.db
 *.log

@@ -4,15 +4,22 @@ import { assertSupportedNode, parsePort, readLocalHealth } from './runtime.js';
 async function main() {
   assertSupportedNode();
   const port = parsePort(process.env.PORT);
+  const needsCatalogBuild = catalogNeedsBuild() || process.env.UAI_REBUILD_CATALOG === '1';
   const alreadyRunning = await readLocalHealth(port);
 
   if (alreadyRunning) {
-    console.log(`Ultimate Animation Index is already running at http://localhost:${port}`);
+    if (needsCatalogBuild) {
+      console.log(
+        `Ultimate Animation Index is already running at http://localhost:${port}, but its local catalog is out of date. Stop the existing server, then run npm start again to rebuild it.`,
+      );
+    } else {
+      console.log(`Ultimate Animation Index is already running at http://localhost:${port}`);
+    }
     return;
   }
 
-  if (catalogNeedsBuild() || process.env.UAI_REBUILD_CATALOG === '1') {
-    console.log('Generating public/catalog.json...');
+  if (needsCatalogBuild) {
+    console.log('Generating local SQLite catalog...');
     buildCatalog();
   }
 

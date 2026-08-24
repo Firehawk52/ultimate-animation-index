@@ -12,7 +12,7 @@ lists.
 
 There is no title limit. The list can keep growing as new and older work is added.
 
-See the [changelog](CHANGELOG.md) for the full release history and version 2.3.2 details.
+See the [changelog](CHANGELOG.md) for the full release history and version 3.0.0 details.
 
 ## Highlights
 
@@ -70,6 +70,15 @@ handle common actions without turning the interface into a spreadsheet.
 Complex franchises are expressed as readable viewing paths with chronology notes,
 episode jumps and explicit `ESSENTIAL`, `OPTIONAL` or `SKIP` decisions.
 
+For a strict crossover chronology, a guide can repeat the same episode as separate numbered
+steps and attach a `timeRange` plus `resumeNote` to each step. This makes instructions such
+as “watch 00:00–15:12, continue elsewhere, then return” explicit. Mark those orders with
+`"mode": "strict-chronology"`; live-action-only steps use `"kind": "live-action"` and
+remain in the guide rather than becoming catalog titles. Each live-action step can be marked
+watched locally and is included in private backups. A franchise guide is shown only when it
+contains at least one animation step, so a live-action-only franchise never appears in this
+animation index.
+
 ![Expanded franchise watch-order guide](docs/screenshots/franchise-guides.png)
 
 ## Quick start
@@ -97,13 +106,13 @@ You can also use the included start launchers after cloning:
 Curated JSON source
         │
         ▼
-public/catalog.json ──► Browser application ──► Local watch data
-        │                        │                    │
-        │                        ▼                    ▼
-        └──────────────► Metadata providers      localStorage
-                                 │
-                                 ▼
-                         Local cover cache
+data/catalog.sqlite ──► Local server ──► Browser application
+        │                   │                    │
+        │                   ▼                    ▼
+        └──────────────► Metadata providers  data/local/user-data.json
+                                 │                    │
+                                 ▼                    ▼
+                         Local cover cache      Private local user data
 ```
 
 `npm start` generates the catalog when it is missing or its version-controlled source
@@ -116,7 +125,7 @@ gradually fills the local artwork cache.
 ```text
 .
 ├── data/                 # Human-maintained catalog source
-├── public/               # Browser application; catalog.json is generated locally
+├── public/               # Browser application
 ├── scripts/              # Cross-platform build and startup helpers
 ├── src/                  # Static server, metadata cache and local API
 └── .github/workflows/    # Automated GitHub checks
@@ -130,8 +139,9 @@ caches, signing keys and installed packages are intentionally excluded from Git.
 
 | Generated locally     | Purpose                                |
 | --------------------- | -------------------------------------- |
-| `public/catalog.json` | Browser-ready catalog                  |
+| `data/catalog.sqlite` | Generated indexed catalog database     |
 | `data/covers/`        | Downloaded artwork                     |
+| `data/local/`         | Private watch progress and user data   |
 | `.cache/`             | Provider metadata cache                |
 | `.userlist-keys/`     | Installation-specific signing identity |
 | `node_modules/`       | Development tooling                    |
@@ -188,14 +198,14 @@ npm run build:catalog
 
 Useful commands:
 
-| Command                 | Purpose                                                  |
-| ----------------------- | -------------------------------------------------------- |
-| `npm start`             | Generate a missing catalog, then start on port 8787      |
-| `npm run update`        | Safely update, synchronize packages and rebuild locally  |
-| `npm run build:catalog` | Validate the source and regenerate `public/catalog.json` |
-| `npm run format`        | Format the human-maintained web and documentation files  |
-| `npm run check`         | Check JavaScript syntax                                  |
-| `npm run verify`        | Run formatting, syntax and catalog-build release checks  |
+| Command                 | Purpose                                                    |
+| ----------------------- | ---------------------------------------------------------- |
+| `npm start`             | Generate a missing SQLite catalog, then start on port 8787 |
+| `npm run update`        | Safely update, synchronize packages and rebuild locally    |
+| `npm run build:catalog` | Validate the source and regenerate `data/catalog.sqlite`   |
+| `npm run format`        | Format the human-maintained web and documentation files    |
+| `npm run check`         | Check JavaScript syntax                                    |
+| `npm run verify`        | Run formatting, syntax and catalog-build release checks    |
 
 Pull requests run the same checks through GitHub Actions. The workflow builds the
 catalog on Node.js 20 and 22 across Linux, Windows and macOS without adding
@@ -341,8 +351,22 @@ before/after review and explicitly chooses whether to apply it. Only changes acc
 this repository's `main` branch become part of the catalog distributed to every user.
 
 Accepted changes update `data/catalog-source.json` atomically and regenerate the ignored
-browser copy. Stale packages are rejected when their original values no longer match the
+SQLite database. Stale packages are rejected when their original values no longer match the
 current catalog, preventing an older review from silently overwriting newer curation.
+
+### Release updates
+
+**My Library → Release Updates** accepts a small, curated daily package for new animation
+announcements and meaningful changes to upcoming or recently released titles. It is not a
+generic catalog importer: it never changes global rank, personal data, collections or
+franchise orders. Each package is previewed with field-level before/after diffs, individual
+selection and source evidence before it can be applied on the machine running the local server.
+
+The apply operation is atomic: the selected entries are resolved and validated again, the
+whole resulting catalog is validated, then the source catalog is replaced and rebuilt. A
+duplicate import becomes a no-op. See [Release Update Packages](docs/release-update-packages.md)
+and the [version 1 example](docs/examples/release-update-package-v1.json) for the strict JSON
+schema, supported fields and editorial restrictions.
 
 ### Private backup and restore
 
@@ -356,12 +380,18 @@ this file is intended only for the owner and includes:
 - Imported UserList sources
 - Saved searches, filters, sorting and interface preferences
 
-Backup files are created entirely in the browser and are never uploaded to the server.
-They are readable JSON rather than encrypted archives and should be kept private.
-On import, every record is validated before any local storage is changed. **Merge** keeps
-existing local data and lets backup values resolve conflicts, while **Replace** restores
-only the selected backup. Storage writes are rolled back if the browser cannot complete
-the full import.
+Backup files are created locally and are never uploaded outside the computer. They are
+readable JSON rather than encrypted archives and should be kept private. The running
+local server continuously saves the same private data to `data/local/user-data.json`,
+which is excluded from Git. Technical metadata and series caches are kept separately in
+`data/local/cache.json`, so they do not inflate the user-data file. On import, every
+record is validated before the user-data file is changed. **Merge** keeps existing local data and lets backup values resolve conflicts,
+while **Replace** restores only the selected backup. Storage writes are rolled back if
+the local file cannot be updated.
+
+On the first start after upgrading, existing Ultimate Animation Index browser storage is
+migrated automatically into this local JSON file. The old browser entries are removed
+only after the file was written successfully, so established lists are preserved.
 
 ### Tamper protection
 
@@ -385,9 +415,9 @@ Keep this folder when updating the same installation so its public fingerprint r
 
 Never share the private key file.
 
-Runtime data in `.userlist-keys/`, `.cache/` and `data/covers/` is intentionally excluded
-from Git. Do not force-add these folders: signing keys are private and cached metadata
-or artwork can be regenerated.
+Runtime data in `.userlist-keys/`, `.cache/`, `data/covers/` and `data/local/` is
+intentionally excluded from Git. Do not force-add these folders: signing keys and private
+user data must remain local, while cached metadata or artwork can be regenerated.
 
 ## Third-party content and copyright
 
@@ -426,7 +456,7 @@ Aliases are normalized where possible. Separate remakes or adaptations can still
 ## Rebuilding the catalog
 
 The human-maintained source is in `data/catalog-source.json`. Node.js validates its
-structure, duplicate IDs and collection references before generating the browser copy.
+structure, duplicate IDs and collection references before generating the local SQLite index.
 
 Run this when you want to rebuild it explicitly:
 
@@ -434,16 +464,69 @@ Run this when you want to rebuild it explicitly:
 npm run build:catalog
 ```
 
-This regenerates the browser's catalog:
+This regenerates the local indexed database:
 
 ```text
-public/catalog.json
+data/catalog.sqlite
 ```
 
-The generated JSON is formatted with indentation and line breaks for local inspection.
-It is ignored by Git and should not be edited or committed. Edit the source file
-instead. If `public/catalog.json` is missing or outdated, `npm start` creates it
-automatically with the included Node.js build script.
+The generated database is ignored by Git and should not be edited or committed. Edit
+the source file instead. If `data/catalog.sqlite` is missing or outdated, `npm start`
+creates it automatically with the included Node.js build script.
+
+## Interface translations
+
+Translations are interface-only: catalog titles, genres, episode names and editorial
+notes stay in their curated source language.
+
+- **Local translation packs** are selected and installed in **My Library → Interface
+  Language**. They are private to that installation and are included in private backups.
+- **Official translation packs** live in `public/translations/` and are listed in
+  `public/translations/index.json`. They are bundled with releases and can offer an
+  optional, user-approved update from the project GitHub repository.
+- Official packs may list multiple contributors. Only non-anonymous contributor names
+  are displayed in the application; profile links are intentionally not collected.
+
+To approve a finished translation, review the JSON, add the pack and its matching registry
+entry, then run:
+
+```bash
+npm run check:translations
+```
+
+Only a reviewed pack committed to the repository is official. Uploading a JSON through the
+app never grants official status.
+
+### Awards in title data
+
+Titles can optionally include an `awards` array. Every entry is validated during the
+catalog build and is rendered as a recognition record in the title details view. The
+interface derives an original program mark from `programKey`, so new award programs do
+not require a frontend release.
+
+```json
+"awards": [
+  {
+    "programKey": "academy:animated-short",
+    "organization": "Academy of Motion Picture Arts and Sciences",
+    "award": "Academy Awards",
+    "category": "Animated Short Film",
+    "result": "Winner",
+    "edition": 82,
+    "cycle": "2009",
+    "eventYear": 2010,
+    "sourceTitle": "Logorama",
+    "sourceUrl": "https://awardsdatabase.oscars.org/"
+  }
+]
+```
+
+`programKey` is a stable program identifier such as `academy:animated-short`. It may
+be new to the catalog; unknown programs receive a neutral generated mark automatically.
+Use a plain `http` or `https` source URL (a Markdown-style URL is also accepted for
+older source material). Title-level `sourceUrl` fields may also use
+`{ "label": "Official source", "url": "https://…" }`; both forms validate and
+produce the same source link in the details view.
 
 ## Contributing and security
 

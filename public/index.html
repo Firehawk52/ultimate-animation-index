@@ -14,7 +14,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700&family=Michroma&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700&family=Fredoka:wdth,wght@75..125,500;75..125,600;75..125,700&family=Michroma&family=Nunito+Sans:opsz,wght@6..12,600;6..12,700;6..12,800;6..12,900&family=Space+Grotesk:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="styles.css?v=2.3.2-michroma-numerics-1" />
@@ -55,11 +55,13 @@
       <button class="rail-tab active" data-tab="master" type="button" aria-current="page">
         <b>01</b><span>MASTER</span>
       </button>
-      <button class="rail-tab" data-tab="collections" type="button"><b>02</b><span>COLLECTIONS</span></button>
-      <button class="rail-tab" data-tab="franchises" type="button"><b>03</b><span>FRANCHISES</span></button>
-      <button class="rail-tab" data-tab="adult" type="button"><b>04</b><span>MATURE</span></button>
-      <button class="rail-tab" data-tab="favorites" type="button"><b>05</b><span>FAVORITES</span></button>
-      <button class="rail-tab" data-tab="userlist" type="button"><b>06</b><span>MY LIBRARY</span></button>
+      <button class="rail-tab" data-tab="regions" type="button"><b>02</b><span>REGIONS</span></button>
+      <button class="rail-tab" data-tab="collections" type="button"><b>03</b><span>COLLECTIONS</span></button>
+      <button class="rail-tab" data-tab="franchises" type="button"><b>04</b><span>FRANCHISES</span></button>
+      <button class="rail-tab" data-tab="adult" type="button"><b>05</b><span>MATURE</span></button>
+      <button class="rail-tab" data-tab="kids" type="button"><b>06</b><span>FOR KIDS</span></button>
+      <button class="rail-tab" data-tab="favorites" type="button"><b>07</b><span>FAVORITES</span></button>
+      <button class="rail-tab" data-tab="userlist" type="button"><b>08</b><span>MY LIBRARY</span></button>
     </nav>
 
     <main id="mainContent" class="main-shell">
@@ -93,18 +95,27 @@
             <input
               id="searchInput"
               type="search"
-              placeholder="Search titles, genres or studios"
+              placeholder="Search titles, genres, studios or awards"
               autocomplete="off"
             />
           </div>
-          <select id="tierFilter" aria-label="Quality tier">
+          <select id="tierFilter" aria-label="Quality tier" data-i18n-skip-content>
             <option value="">ALL TIERS</option>
           </select>
-          <select id="typeFilter" aria-label="Format">
+          <select id="typeFilter" aria-label="Format" data-i18n-skip-content>
             <option value="">ALL FORMATS</option>
           </select>
-          <select id="genreFilter" aria-label="Genre">
+          <select id="genreFilter" aria-label="Genre" data-i18n-skip-content>
             <option value="">ALL GENRES</option>
+          </select>
+          <select id="awardFilter" aria-label="Award recognition" data-i18n-skip-content>
+            <option value="">ALL AWARDS</option>
+          </select>
+          <select id="regionFilter" aria-label="Region" data-i18n-skip-content>
+            <option value="">ALL REGIONS</option>
+          </select>
+          <select id="countryFilter" aria-label="Country" data-i18n-skip-content>
+            <option value="">ALL COUNTRIES</option>
           </select>
           <select id="statusFilter" aria-label="Watch status">
             <option value="">ALL STATUS</option>
@@ -150,6 +161,90 @@
         <section class="card-grid" id="cards"></section>
         <div class="load-wrap">
           <button id="loadMoreBtn" class="slash-button" type="button">LOAD MORE</button>
+        </div>
+      </section>
+
+      <section id="regionsTab" class="panel">
+        <header class="section-head angled-head western-head">
+          <div>
+            <div class="kicker">GLOBAL DISCOVERY</div>
+            <h2>REGIONS</h2>
+          </div>
+          <p>
+            Browse the full collection by region or country. Co-productions appear under every origin they
+            share.
+          </p>
+        </header>
+        <section class="origin-atlas" id="originAtlas" aria-label="Browse titles by region"></section>
+        <div class="toolbar-shell western-tools">
+          <div class="search-block">
+            <label class="search-prompt" for="westernSearch">SEARCH //</label
+            ><input
+              id="westernSearch"
+              type="search"
+              placeholder="Search titles, countries, genres or studios"
+              autocomplete="off"
+            />
+          </div>
+          <select id="westernTierFilter" aria-label="Region quality tier" data-i18n-skip-content>
+            <option value="">ALL TIERS</option>
+          </select>
+          <select id="westernTypeFilter" aria-label="Region format" data-i18n-skip-content>
+            <option value="">ALL FORMATS</option>
+          </select>
+          <select id="westernGenreFilter" aria-label="Region genre" data-i18n-skip-content>
+            <option value="">ALL GENRES</option>
+          </select>
+          <select id="westernRegionFilter" aria-label="Region" data-i18n-skip-content>
+            <option value="">ALL REGIONS</option>
+          </select>
+          <select id="westernCountryFilter" aria-label="Country" data-i18n-skip-content>
+            <option value="">ALL COUNTRIES</option>
+          </select>
+          <select id="westernStatusFilter" aria-label="Region watch status">
+            <option value="">ALL STATUS</option>
+            <option>Not started</option>
+            <option>Watching</option>
+            <option>Completed</option>
+            <option>On hold</option>
+            <option>Dropped</option>
+          </select>
+          <select id="westernSort" aria-label="Sort region titles by">
+            <option value="rank">MASTER RANK</option>
+            <option value="overall">OVERALL SCORE</option>
+            <option value="production">PRODUCTION</option>
+            <option value="story">STORY</option>
+            <option value="emotional">EMOTIONAL PAYOFF</option>
+            <option value="year">RELEASE DATE</option>
+            <option value="title">NAME</option>
+            <option value="myrating">MY RATING</option>
+          </select>
+          <button
+            id="westernSortOrder"
+            class="master-sort-order"
+            type="button"
+            aria-label="Change to ascending order"
+            data-tooltip="Change to ascending order"
+          ></button>
+          <button
+            id="westernViewToggle"
+            class="square-button"
+            type="button"
+            data-tooltip="Toggle compact view"
+          >
+            ▥
+          </button>
+        </div>
+        <div class="result-line">
+          <span><b id="westernResultCount">0</b> TITLES</span>
+          <div>
+            <label><input id="westernHideCompleted" type="checkbox" /> HIDE COMPLETED</label
+            ><label><input id="westernCustomOnly" type="checkbox" /> MY ADDED TITLES</label>
+          </div>
+        </div>
+        <section class="card-grid" id="westernCards"></section>
+        <div class="load-wrap">
+          <button id="westernLoadMoreBtn" class="slash-button" type="button">LOAD MORE</button>
         </div>
       </section>
 
@@ -231,18 +326,27 @@
             <input
               id="adultSearch"
               type="search"
-              placeholder="Search mature titles, genres or studios"
+              placeholder="Search mature titles, genres, studios or awards"
               autocomplete="off"
             />
           </div>
-          <select id="adultTierFilter" aria-label="Mature Content quality tier">
+          <select id="adultTierFilter" aria-label="Mature Content quality tier" data-i18n-skip-content>
             <option value="">ALL TIERS</option>
           </select>
-          <select id="adultTypeFilter" aria-label="Mature Content format">
+          <select id="adultTypeFilter" aria-label="Mature Content format" data-i18n-skip-content>
             <option value="">ALL FORMATS</option>
           </select>
-          <select id="adultGenreFilter" aria-label="Mature Content genre">
+          <select id="adultGenreFilter" aria-label="Mature Content genre" data-i18n-skip-content>
             <option value="">ALL GENRES</option>
+          </select>
+          <select id="adultAwardFilter" aria-label="Mature Content award recognition" data-i18n-skip-content>
+            <option value="">ALL AWARDS</option>
+          </select>
+          <select id="adultRegionFilter" aria-label="Mature Content region" data-i18n-skip-content>
+            <option value="">ALL REGIONS</option>
+          </select>
+          <select id="adultCountryFilter" aria-label="Mature Content country" data-i18n-skip-content>
+            <option value="">ALL COUNTRIES</option>
           </select>
           <select id="adultStatusFilter" aria-label="Mature Content watch status">
             <option value="">ALL STATUS</option>
@@ -273,6 +377,84 @@
         <section class="card-grid adult-grid" id="adultCards"></section>
       </section>
 
+      <section id="kidsTab" class="panel kids-panel">
+        <header class="section-head angled-head kids-head">
+          <div>
+            <div class="kicker">FAMILY-FRIENDLY DISCOVERY</div>
+            <h2>FOR KIDS</h2>
+          </div>
+          <p>
+            A bright, curated route through animation tagged for families and younger viewers. Use the same
+            ranking and watch tools as the Master list.
+          </p>
+        </header>
+        <div class="toolbar-shell kids-tools">
+          <div class="search-block">
+            <label class="search-prompt" for="kidsSearch">SEARCH //</label>
+            <input
+              id="kidsSearch"
+              type="search"
+              placeholder="Search family titles, genres or studios"
+              autocomplete="off"
+            />
+          </div>
+          <select id="kidsTierFilter" aria-label="For Kids quality tier" data-i18n-skip-content>
+            <option value="">ALL TIERS</option>
+          </select>
+          <select id="kidsTypeFilter" aria-label="For Kids format" data-i18n-skip-content>
+            <option value="">ALL FORMATS</option>
+          </select>
+          <select id="kidsGenreFilter" aria-label="For Kids genre" data-i18n-skip-content>
+            <option value="">ALL GENRES</option>
+          </select>
+          <select id="kidsRegionFilter" aria-label="For Kids region" data-i18n-skip-content>
+            <option value="">ALL REGIONS</option>
+          </select>
+          <select id="kidsCountryFilter" aria-label="For Kids country" data-i18n-skip-content>
+            <option value="">ALL COUNTRIES</option>
+          </select>
+          <select id="kidsStatusFilter" aria-label="For Kids watch status">
+            <option value="">ALL STATUS</option>
+            <option>Not started</option>
+            <option>Watching</option>
+            <option>Completed</option>
+            <option>On hold</option>
+            <option>Dropped</option>
+          </select>
+          <select id="kidsSort" aria-label="Sort For Kids titles by">
+            <option value="rank">MASTER RANK</option>
+            <option value="overall">OVERALL SCORE</option>
+            <option value="production">PRODUCTION</option>
+            <option value="story">STORY</option>
+            <option value="emotional">EMOTIONAL PAYOFF</option>
+            <option value="year">RELEASE DATE</option>
+            <option value="title">NAME</option>
+            <option value="myrating">MY RATING</option>
+          </select>
+          <button
+            id="kidsSortOrder"
+            class="master-sort-order"
+            type="button"
+            aria-label="Change to ascending order"
+            data-tooltip="Change to ascending order"
+          ></button>
+          <button id="kidsViewToggle" class="square-button" type="button" data-tooltip="Toggle compact view">
+            ▥
+          </button>
+        </div>
+        <div class="result-line kids-result-line">
+          <span><b id="kidsResultCount">0</b> TITLES</span>
+          <div>
+            <label><input id="kidsHideCompleted" type="checkbox" /> HIDE COMPLETED</label
+            ><label><input id="kidsCustomOnly" type="checkbox" /> MY ADDED TITLES</label>
+          </div>
+        </div>
+        <section class="card-grid kids-grid" id="kidsCards"></section>
+        <div class="load-wrap">
+          <button id="kidsLoadMoreBtn" class="slash-button" type="button">LOAD MORE</button>
+        </div>
+      </section>
+
       <section id="favoritesTab" class="panel">
         <header class="section-head angled-head">
           <div>
@@ -290,10 +472,36 @@
             <input
               id="favoriteSearch"
               type="search"
-              placeholder="Search favorite titles, genres or studios"
+              placeholder="Search favorite titles, genres, studios or awards"
               autocomplete="off"
             />
           </div>
+          <select id="favoriteSort" aria-label="Sort favorite titles by">
+            <option value="rank">MASTER RANK</option>
+            <option value="overall">OVERALL SCORE</option>
+            <option value="production">PRODUCTION</option>
+            <option value="story">STORY</option>
+            <option value="emotional">EMOTIONAL PAYOFF</option>
+            <option value="year">RELEASE DATE</option>
+            <option value="title">NAME</option>
+            <option value="myrating">MY RATING</option>
+          </select>
+          <select id="favoriteAwardFilter" aria-label="Favorite award recognition" data-i18n-skip-content>
+            <option value="">ALL AWARDS</option>
+          </select>
+          <select id="favoriteRegionFilter" aria-label="Favorite region" data-i18n-skip-content>
+            <option value="">ALL REGIONS</option>
+          </select>
+          <select id="favoriteCountryFilter" aria-label="Favorite country" data-i18n-skip-content>
+            <option value="">ALL COUNTRIES</option>
+          </select>
+          <button
+            id="favoriteSortOrder"
+            class="master-sort-order"
+            type="button"
+            aria-label="Change to ascending order"
+            data-tooltip="Change to ascending order"
+          ></button>
           <span id="favoriteCount">0 FAVORITES</span>
         </div>
         <section class="card-grid" id="favoriteCards"></section>
@@ -324,6 +532,49 @@
               <option value="stars">5 STARS</option>
             </select>
           </label>
+        </section>
+        <section class="library-preferences" aria-labelledby="languageDisplayTitle">
+          <div>
+            <div class="kicker">COMMUNITY LOCALIZATION</div>
+            <h3 id="languageDisplayTitle">INTERFACE LANGUAGE</h3>
+            <p>
+              Translation packs affect the interface only. Every exported entry includes the English source,
+              screen location, translator context, source hash and any length limit. Select an existing
+              translation file to extend it: completed translations are kept, while new or changed lines are
+              flagged. Selecting a file does not install it.
+            </p>
+          </div>
+          <div class="library-language-controls">
+            <label class="library-rating-format">
+              <span>LANGUAGE</span>
+              <select id="interfaceLanguage" aria-label="Interface language" data-i18n-skip-content>
+                <option value="en">ENGLISH</option>
+              </select>
+            </label>
+            <div id="translationCredits" class="translation-credits" data-i18n-skip hidden></div>
+            <div id="officialTranslationUpdate" class="translation-update" hidden>
+              <span id="officialTranslationUpdateText" data-i18n-skip></span>
+              <button id="installOfficialTranslationUpdate" class="slash-button" type="button">
+                INSTALL OFFICIAL UPDATE
+              </button>
+            </div>
+            <button id="exportTranslationTemplate" class="slash-button wide" type="button">
+              DOWNLOAD TRANSLATION TEMPLATE
+            </button>
+            <label class="field-label translation-file-label"
+              >SELECT EXISTING TRANSLATION<input
+                id="translationPackFile"
+                type="file"
+                accept="application/json,.json"
+            /></label>
+            <button id="downloadTranslationUpdate" class="slash-button wide" type="button" disabled>
+              DOWNLOAD UPDATED TEMPLATE
+            </button>
+            <button id="importTranslationPack" class="slash-button hot wide" type="button" disabled>
+              INSTALL TRANSLATION PACK LOCALLY
+            </button>
+            <div id="translationResult" class="import-result" data-i18n-skip></div>
+          </div>
         </section>
         <div id="securityState" class="security-strip">
           <b>SECURE SHARING</b><span>Checking signature service...</span>
@@ -509,6 +760,55 @@
                 APPLY TO THIS INSTALLATION
               </button>
               <div id="correctionImportResult" class="import-result"></div>
+            </div>
+          </section>
+          <section class="user-panel release-updates-panel">
+            <div class="release-updates-copy">
+              <div class="panel-no">G</div>
+              <div class="kicker">CURATED RELEASE MONITOR</div>
+              <h3>RELEASE UPDATES</h3>
+              <p>
+                Import a curated release-update package containing newly announced titles, release-date
+                changes and metadata updates. Every change is previewed before it touches your catalog.
+              </p>
+              <label class="field-label release-package-file"
+                >RELEASE UPDATE PACKAGE<input
+                  id="releaseUpdateFile"
+                  type="file"
+                  accept="application/json,.json"
+              /></label>
+              <div id="releaseUpdateFileSummary" class="release-update-file-summary">
+                <b>NO PACKAGE SELECTED</b><span>Choose a version 1 release-update JSON file to begin.</span>
+              </div>
+              <div class="release-update-actions">
+                <button id="previewReleaseUpdates" class="slash-button wide" type="button" disabled>
+                  PREVIEW
+                </button>
+                <button id="clearReleaseUpdates" class="danger-button wide" type="button" disabled>
+                  CLEAR
+                </button>
+              </div>
+              <div class="release-update-history-head">
+                <span>LOCAL IMPORT HISTORY</span
+                ><button id="clearReleaseUpdateHistory" type="button">CLEAR HISTORY</button>
+              </div>
+              <div id="releaseUpdateHistory" class="release-update-history"></div>
+            </div>
+            <div class="release-updates-review">
+              <div class="kicker">BEFORE / AFTER REVIEW</div>
+              <h3>PACKAGE PREVIEW</h3>
+              <p>
+                Select the valid changes you want to apply. Conflicts, invalid entries and no-ops cannot be
+                applied.
+              </p>
+              <div id="releaseUpdateSummary" class="release-update-summary"></div>
+              <div id="releaseUpdatePreview" class="release-update-preview">
+                <div class="empty-state">Select a package, then preview it before applying.</div>
+              </div>
+              <button id="applySelectedReleaseUpdates" class="slash-button hot wide" type="button" disabled>
+                APPLY SELECTED
+              </button>
+              <div id="releaseUpdateResult" class="import-result"></div>
             </div>
           </section>
         </div>

@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { readFile, writeFile, mkdir, stat, rename } from 'node:fs/promises';
 import {
   copyFileSync,
@@ -28,6 +29,7 @@ import {
   parseCorrectionCode,
   validateCorrectionPackage,
 } from '../scripts/catalog-corrections.js';
+import { applyReleaseUpdatePackage, previewReleaseUpdatePackage } from '../scripts/release-updates.js';
 
 // Runtime paths and resource limits
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -36,13 +38,19 @@ const PUBLIC = join(ROOT, 'public');
 const PRIVATE = join(ROOT, '.userlist-keys');
 const CACHE_DIR = join(ROOT, '.cache');
 const DATA_DIR = join(ROOT, 'data');
+const LOCAL_DATA_DIR = join(DATA_DIR, 'local');
+const LOCAL_USER_DATA = join(LOCAL_DATA_DIR, 'user-data.json');
+const LOCAL_CACHE_DATA = join(LOCAL_DATA_DIR, 'cache.json');
 const LEGACY_COVER_DIR = join(ROOT, 'covers');
 const CATALOG_SOURCE = join(DATA_DIR, 'catalog-source.json');
+const CATALOG_DATABASE = join(DATA_DIR, 'catalog.sqlite');
 const PORT = parsePort(process.env.PORT);
 const HOST = process.env.UAI_HOST || '127.0.0.1';
 const USERLIST_SCHEMA = 3;
 const MAX_BODY = 1024 * 1024;
+const MAX_LOCAL_DATA_BODY = 10 * 1024 * 1024;
 const META_TTL = 1000 * 60 * 60 * 24 * 30;
+const SERIES_REFRESH_TTL = 1000 * 60 * 60 * 24;
 const MAX_COVER_BYTES = 10 * 1024 * 1024;
 const PACKAGE_VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
 const LATEST_RELEASE_API = 'https://api.github.com/repos/Firehawk52/ultimate-animation-index/releases/latest';
@@ -52,10 +60,12 @@ const TRUST_DOCKER_CLIENT = process.env.UAI_TRUST_DOCKER_CLIENT === '1';
 const UPDATE_SUPPORTED = existsSync(join(ROOT, '.git'));
 const UPDATE_TOKEN = randomBytes(24).toString('base64url');
 let updateRunning = false;
+let catalogDatabase = null;
 
 mkdirSync(PRIVATE, { recursive: true });
 mkdirSync(CACHE_DIR, { recursive: true });
 mkdirSync(DATA_DIR, { recursive: true });
+mkdirSync(LOCAL_DATA_DIR, { recursive: true });
 let coverDirectory = join(DATA_DIR, 'covers');
 if (existsSync(LEGACY_COVER_DIR) && !existsSync(coverDirectory)) {
   try {
@@ -103,6 +113,9 @@ try {
   metadataCache = JSON.parse(readFileSync(cachePath, 'utf8'));
 } catch {}
 let cacheTimer = null;
+// A failed image download should not leave a title without a cover for the full
+// metadata TTL. Retry later, while still avoiding repeated provider requests.
+const MISSING_COVER_RETRY_TTL = 1000 * 60 * 60;
 function persistCacheSoon() {
   clearTimeout(cacheTimer);
   cacheTimer = setTimeout(() => {
@@ -202,6 +215,18 @@ async function applyCatalogCorrectionCode(code) {
   return correction;
 }
 
+async function applyReleaseUpdates(input, selectedUpdateIds) {
+  const current = await readCatalogSource();
+  const result = applyReleaseUpdatePackage(current, input, selectedUpdateIds);
+  // Validate before replacing the source file: no selected change can leave a partial catalog behind.
+  validateCatalog(result.catalog);
+  const temporary = `${CATALOG_SOURCE}.next`;
+  await writeFile(temporary, `${JSON.stringify(result.catalog, null, 2)}\n`, 'utf8');
+  await rename(temporary, CATALOG_SOURCE);
+  buildCatalog();
+  return result;
+}
+
 function restartServerAfterUpdate() {
   server.close(() => {
     const replacement = spawn(process.execPath, [join(ROOT, 'scripts', 'start.js')], {
@@ -217,12 +242,12 @@ function restartServerAfterUpdate() {
   setTimeout(() => server.closeAllConnections?.(), 180).unref();
 }
 
-async function readBody(req) {
+async function readBody(req, maxBytes = MAX_BODY) {
   let total = 0;
   const chunks = [];
   for await (const chunk of req) {
     total += chunk.length;
-    if (total > MAX_BODY) throw new Error('body-too-large');
+    if (total > maxBytes) throw new Error('body-too-large');
     chunks.push(chunk);
   }
   const raw = Buffer.concat(chunks).toString('utf8');
@@ -232,6 +257,46 @@ async function readBody(req) {
   } catch {
     throw new Error('invalid-json');
   }
+}
+
+async function readLocalUserData() {
+  try {
+    const data = JSON.parse(await readFile(LOCAL_USER_DATA, 'utf8'));
+    if (!data || typeof data !== 'object' || Array.isArray(data) || !data.storage) return {};
+    return data.storage;
+  } catch {
+    return {};
+  }
+}
+
+async function writeLocalUserData(storage) {
+  const temporary = `${LOCAL_USER_DATA}.next`;
+  await writeFile(
+    temporary,
+    `${JSON.stringify({ version: 1, savedAt: new Date().toISOString(), storage }, null, 2)}\n`,
+    'utf8',
+  );
+  await rename(temporary, LOCAL_USER_DATA);
+}
+
+async function readLocalCacheData() {
+  try {
+    const data = JSON.parse(await readFile(LOCAL_CACHE_DATA, 'utf8'));
+    if (!data || typeof data !== 'object' || Array.isArray(data) || !data.storage) return {};
+    return data.storage;
+  } catch {
+    return {};
+  }
+}
+
+async function writeLocalCacheData(storage) {
+  const temporary = `${LOCAL_CACHE_DATA}.next`;
+  await writeFile(
+    temporary,
+    `${JSON.stringify({ version: 1, savedAt: new Date().toISOString(), storage }, null, 2)}\n`,
+    'utf8',
+  );
+  await rename(temporary, LOCAL_CACHE_DATA);
 }
 
 // UserList schema validation and signatures
@@ -247,6 +312,7 @@ const allowedTitle = new Set([
   'externalId',
   'genres',
   'content',
+  'coverSource',
 ]);
 const allowedContent = new Set(['sex', 'nudity', 'violence', 'gore', 'disturbing', 'tags']);
 const allowedOpinion = new Set(['id', 'verdict']);
@@ -285,6 +351,18 @@ function validateContent(content) {
   }
   return { ...levels, tags };
 }
+function validateCoverSource(source) {
+  if (source == null) return null;
+  if (!exactKeys(source, new Set(['url', 'status', 'checkedAt']))) throw new Error('invalid-title');
+  const url = safeText(source.url, 2000, false);
+  const status = safeText(source.status, 16, true);
+  const checkedAt = safeText(source.checkedAt, 64, false);
+  if (!['verified', 'dead', 'pending', 'wrong'].includes(status)) throw new Error('invalid-title');
+  if ((status === 'wrong' && url) || (status !== 'wrong' && (!url || !allowedCoverUrl(url))))
+    throw new Error('invalid-title');
+  if (checkedAt && !Number.isFinite(Date.parse(checkedAt))) throw new Error('invalid-title');
+  return { url, status, checkedAt };
+}
 function validatePayload(input) {
   if (!exactKeys(input, allowedRoot)) throw new Error('invalid-schema');
   if (input.v !== 1) throw new Error('unsupported-version');
@@ -319,8 +397,10 @@ function validatePayload(input) {
     const externalId = safeText(String(t.externalId ?? ''), 80, false);
     const hasGenres = Object.hasOwn(t, 'genres');
     const hasContent = Object.hasOwn(t, 'content');
+    const hasCoverSource = Object.hasOwn(t, 'coverSource');
     const genres = hasGenres ? safeText(t.genres, 500, false) : '';
     const content = hasContent ? validateContent(t.content) : null;
+    const coverSource = hasCoverSource ? validateCoverSource(t.coverSource) : null;
     const year = Number(t.year || 0);
     if (
       !title ||
@@ -336,6 +416,7 @@ function validatePayload(input) {
     const normalizedTitle = { id: t.id, title, year, type, origin, api, lookupTitle, externalId };
     if (hasGenres) normalizedTitle.genres = genres;
     if (hasContent) normalizedTitle.content = content;
+    if (coverSource) normalizedTitle.coverSource = coverSource;
     titles.push(normalizedTitle);
   }
   const created = safeText(input.created || new Date().toISOString(), 64, true);
@@ -435,7 +516,7 @@ function coverExtension(contentType = '', raw = '') {
     return '';
   }
 }
-async function localizeCover(rawUrl = '') {
+async function localizeCover(rawUrl = '', { verifyRemote = false } = {}) {
   if (!rawUrl) return '';
   if (rawUrl.startsWith('/covers/')) {
     const local = join(COVER_DIR, rawUrl.slice('/covers/'.length));
@@ -443,8 +524,10 @@ async function localizeCover(rawUrl = '') {
   }
   if (!allowedCoverUrl(rawUrl)) return '';
   const key = createHash('sha256').update(rawUrl).digest('hex').slice(0, 32);
-  for (const ext of ['.jpg', '.png', '.webp', '.avif', '.gif']) {
-    if (existsSync(join(COVER_DIR, `${key}${ext}`))) return `/covers/${key}${ext}`;
+  if (!verifyRemote) {
+    for (const ext of ['.jpg', '.png', '.webp', '.avif', '.gif']) {
+      if (existsSync(join(COVER_DIR, `${key}${ext}`))) return `/covers/${key}${ext}`;
+    }
   }
   if (coverInflight.has(key)) return coverInflight.get(key);
   const job = (async () => {
@@ -505,6 +588,11 @@ async function localizeMetadataArtwork(data) {
 }
 function normMetaTitle(s = '') {
   return String(s)
+    .replace(/æ/gi, 'ae')
+    .replace(/œ/gi, 'oe')
+    .replace(/ß/g, 'ss')
+    .replace(/ø/gi, 'o')
+    .replace(/þ/gi, 'th')
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
@@ -666,6 +754,56 @@ export function fromAniListSeriesMedia(media) {
   };
 }
 
+function seriesCandidateScore(candidate, title) {
+  const target = normMetaTitle(title);
+  const names = [candidate.title, candidate.altTitle].filter(Boolean).map(normMetaTitle);
+  const exact = names.some((name) => name === target);
+  let score = exact ? 100 : names.some((name) => name.includes(target) || target.includes(name)) ? 60 : 0;
+  if (candidate.format === 'TV' || candidate.format === 'TV_SHORT' || candidate.type === 'Animation')
+    score += 12;
+  if (candidate.year) score += 2;
+  return score;
+}
+
+function normalizeSeriesCandidates(candidates, title) {
+  return candidates
+    .filter((candidate) => candidate?.provider && candidate?.id && candidate?.title)
+    .map((candidate) => ({ ...candidate, score: seriesCandidateScore(candidate, title) }))
+    .filter((candidate) => candidate.score > 0)
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        Number(right.year || 0) - Number(left.year || 0) ||
+        String(left.title).localeCompare(String(right.title)),
+    )
+    .slice(0, 8)
+    .map(({ score, ...candidate }) => candidate);
+}
+
+async function listAniListSeriesCandidates(title) {
+  const data = await fetchAniList(
+    `query($search:String!){Page(page:1,perPage:8){media(search:$search,type:ANIME){${ANILIST_SERIES_FIELDS}}}}`,
+    { search: title },
+  );
+  return normalizeSeriesCandidates(
+    (data.Page?.media || [])
+      .map(fromAniListSeriesMedia)
+      .filter(Boolean)
+      .map((entry) => ({
+        provider: 'anilist',
+        id: entry.id,
+        title: entry.title,
+        altTitle: entry.altTitle,
+        year: entry.year,
+        format: entry.format,
+        status: entry.status,
+        episodes: entry.episodes,
+        cover: entry.cover,
+      })),
+    title,
+  );
+}
+
 export function anilistSeriesNeedsRefresh(group) {
   return (group?.entries || []).some((entry) =>
     ['RELEASING', 'NOT_YET_RELEASED', 'HIATUS'].includes(entry.status),
@@ -756,18 +894,26 @@ async function fetchAniListSeriesNodes(ids) {
   return ids.map((_, index) => fromAniListSeriesMedia(data[`m${index}`])).filter(Boolean);
 }
 
-async function getAniListSeries(title) {
-  const key = `series:anilist:v5:${normMetaTitle(title)}`;
+async function getAniListSeries(title, selectedId = '') {
+  const selected = /^\d+$/.test(String(selectedId)) ? String(selectedId) : '';
+  const key = `series:anilist:v6:${normMetaTitle(title)}:${selected || 'auto'}`;
   const cached = metadataCache[key];
-  // Finished and cancelled series are immutable locally. Active AniList series
-  // deliberately bypass the cache so new episodes and sequel relations appear
-  // the next time a user opens the tracker.
-  if (cached?.data && !anilistSeriesNeedsRefresh(cached.data)) return cached.data;
+  // Finished and cancelled series remain cached indefinitely. Active series are
+  // refreshed at most once per day, even when users reopen their tracker.
+  if (
+    cached?.data &&
+    (!anilistSeriesNeedsRefresh(cached.data) || Date.now() - cached.ts < SERIES_REFRESH_TTL)
+  )
+    return cached.data;
 
-  const rootData = await fetchAniList(
-    `query($search:String!){Media(search:$search,type:ANIME){${ANILIST_SERIES_FIELDS}}}`,
-    { search: title },
-  );
+  const rootData = selected
+    ? await fetchAniList(`query($id:Int!){Media(id:$id,type:ANIME){${ANILIST_SERIES_FIELDS}}}`, {
+        id: Number(selected),
+      })
+    : await fetchAniList(
+        `query($search:String!){Media(search:$search,type:ANIME){${ANILIST_SERIES_FIELDS}}}`,
+        { search: title },
+      );
   const root = fromAniListSeriesMedia(rootData.Media);
   if (!root) throw new Error('not-found');
   const entries = new Map([[root.id, root]]);
@@ -841,6 +987,7 @@ export function fromTVMazeSeries(show) {
       return {
         id: `${show.id}:season:${season}`,
         provider: 'tvmaze',
+        seasonNumber: season,
         title: season ? `${show.name} Season ${season}` : `${show.name} Specials`,
         altTitle: show.name || '',
         year,
@@ -864,29 +1011,138 @@ export function fromTVMazeSeries(show) {
   };
 }
 
-async function getTVMazeSeries(title) {
-  const key = `series:tvmaze:v2:${normMetaTitle(title)}`;
+async function getTVMazeSeries(title, selectedId = '') {
+  const selected = /^\d+$/.test(String(selectedId)) ? String(selectedId) : '';
+  const key = `series:tvmaze:v3:${normMetaTitle(title)}:${selected || 'auto'}`;
   const cached = metadataCache[key];
-  if (cached?.data && !tvMazeSeriesNeedsRefresh(cached.data)) return cached.data;
+  if (cached?.data && (!tvMazeSeriesNeedsRefresh(cached.data) || Date.now() - cached.ts < SERIES_REFRESH_TTL))
+    return cached.data;
 
-  const response = await fetch(
-    `https://api.tvmaze.com/singlesearch/shows?q=${encodeURIComponent(title)}&embed=episodes`,
-    {
+  let candidates;
+  if (selected) {
+    candidates = [{ id: selected }];
+  } else {
+    const response = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(title)}`, {
       headers: { Accept: 'application/json', 'User-Agent': 'UltimateAnimationIndex/2.0' },
       signal: AbortSignal.timeout(12000),
-    },
-  );
+    });
+    if (!response.ok) throw new Error(`tvmaze-${response.status}`);
+    const target = normMetaTitle(title);
+    candidates = (await response.json())
+      .map((row) => row?.show)
+      .filter((show) => show?.id)
+      .sort((left, right) => {
+        const score = (show) => {
+          const name = normMetaTitle(show.name);
+          let value = name === target ? 100 : name.includes(target) || target.includes(name) ? 60 : 0;
+          if (show.type === 'Animation') value += 20;
+          if (show.status === 'Ended') value += 8;
+          if (show.premiered) value += 3;
+          return value;
+        };
+        return score(right) - score(left);
+      });
+  }
+  for (const candidate of candidates.slice(0, 6)) {
+    const details = await fetch(
+      `https://api.tvmaze.com/shows/${encodeURIComponent(candidate.id)}?embed=episodes`,
+      {
+        headers: { Accept: 'application/json', 'User-Agent': 'UltimateAnimationIndex/2.0' },
+        signal: AbortSignal.timeout(12000),
+      },
+    );
+    if (!details.ok) continue;
+    const result = fromTVMazeSeries(await details.json());
+    if (!result?.entries.length) continue;
+    for (const entry of result.entries) entry.cover = await localizeCover(entry.cover);
+    metadataCache[key] = { ts: Date.now(), data: result };
+    persistCacheSoon();
+    return result;
+  }
+  throw new Error('not-found');
+}
+
+async function listTVMazeSeriesCandidates(title) {
+  const response = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(title)}`, {
+    headers: { Accept: 'application/json', 'User-Agent': 'UltimateAnimationIndex/2.0' },
+    signal: AbortSignal.timeout(12000),
+  });
   if (!response.ok) throw new Error(`tvmaze-${response.status}`);
-  const result = fromTVMazeSeries(await response.json());
-  if (!result?.entries.length) throw new Error('not-found');
-  for (const entry of result.entries) entry.cover = await localizeCover(entry.cover);
-  metadataCache[key] = { ts: Date.now(), data: result };
-  persistCacheSoon();
-  return result;
+  return normalizeSeriesCandidates(
+    (await response.json())
+      .map((row) => row?.show)
+      .filter((show) => show?.id)
+      .map((show) => ({
+        provider: 'tvmaze',
+        id: String(show.id),
+        title: show.name || '',
+        altTitle: '',
+        year: show.premiered ? Number(String(show.premiered).slice(0, 4)) : 0,
+        format: show.type || '',
+        status: show.status || '',
+        episodes: 0,
+        cover: show.image?.medium || show.image?.original || '',
+        type: show.type || '',
+      })),
+    title,
+  );
+}
+
+async function getSeriesCandidates(kind, title) {
+  const providers = kind === 'anilist' ? ['anilist', 'tvmaze'] : ['tvmaze', 'anilist'];
+  for (const provider of providers) {
+    try {
+      const candidates =
+        provider === 'anilist'
+          ? await listAniListSeriesCandidates(title)
+          : await listTVMazeSeriesCandidates(title);
+      if (!candidates.length) continue;
+      const target = normMetaTitle(title);
+      const exact = candidates.filter((candidate) =>
+        [candidate.title, candidate.altTitle].filter(Boolean).some((name) => normMetaTitle(name) === target),
+      );
+      return {
+        provider,
+        candidates,
+        requiresChoice: exact.length > 1 || (!exact.length && candidates.length > 1),
+      };
+    } catch {}
+  }
+  return { provider: '', candidates: [], requiresChoice: false };
+}
+
+async function getSeriesWithFallback(kind, title, selection = {}) {
+  const requestedProvider = ['anilist', 'tvmaze'].includes(selection.provider) ? selection.provider : '';
+  const requestedId = /^\d+$/.test(String(selection.id || '')) ? String(selection.id) : '';
+  const providers = requestedProvider
+    ? [requestedProvider]
+    : kind === 'anilist'
+      ? ['anilist', 'tvmaze']
+      : ['tvmaze', 'anilist'];
+  let lastError = null;
+  for (const provider of providers) {
+    try {
+      const selectedId = provider === requestedProvider ? requestedId : '';
+      const data =
+        provider === 'anilist'
+          ? await getAniListSeries(title, selectedId)
+          : await getTVMazeSeries(title, selectedId);
+      if (Array.isArray(data?.entries) && data.entries.length) return data;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error('not-found');
 }
 async function metaAniList(title) {
   const query = `query($s:String){Media(search:$s,type:ANIME){${ANILIST_FIELDS}}}`;
   const data = await fetchAniList(query, { s: title });
+  return fromAniListMedia(data.Media, title);
+}
+async function metaAniListById(id, title) {
+  const data = await fetchAniList(`query($id:Int!){Media(id:$id,type:ANIME){${ANILIST_FIELDS}}}`, {
+    id: Number(id),
+  });
   return fromAniListMedia(data.Media, title);
 }
 async function metaAniListBatch(titles) {
@@ -1008,6 +1264,17 @@ async function metaTVMaze(title) {
   });
   if (!r.ok) throw new Error(`tvmaze-${r.status}`);
   const m = await r.json();
+  return metadataFromTVMazeShow(m, title);
+}
+async function metaTVMazeById(id, title) {
+  const r = await fetch(`https://api.tvmaze.com/shows/${encodeURIComponent(id)}`, {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!r.ok) throw new Error(`tvmaze-${r.status}`);
+  return metadataFromTVMazeShow(await r.json(), title);
+}
+async function metadataFromTVMazeShow(m, title) {
   let data = {
     source: 'tvmaze',
     externalId: String(m.id),
@@ -1057,13 +1324,15 @@ async function metaTVMaze(title) {
   }
   return data;
 }
-function cacheKey(kind, title) {
-  return `${kind}:${String(title).toLowerCase()}`;
+function cacheKey(kind, title, externalId = '') {
+  const id = String(externalId || '').trim();
+  return id ? `${kind}:id:${id}` : `${kind}:${String(title).toLowerCase()}`;
 }
-function cacheGet(kind, title) {
-  const hit = metadataCache[cacheKey(kind, title)];
+function cacheGet(kind, title, externalId = '') {
+  const hit = metadataCache[cacheKey(kind, title, externalId)];
   if (!hit || Date.now() - hit.ts >= META_TTL) return null;
   const d = hit.data;
+  if (!d?.cover && Date.now() - hit.ts >= MISSING_COVER_RETRY_TTL) return null;
   if (d?.cover && !String(d.cover).startsWith('/covers/')) return null;
   if (d?.cover?.startsWith('/covers/') && !existsSync(join(COVER_DIR, d.cover.slice('/covers/'.length))))
     return null;
@@ -1080,19 +1349,41 @@ function cacheGet(kind, title) {
   }
   return d;
 }
-function cachePut(kind, title, data) {
+function cachePut(kind, title, data, externalId = '') {
+  // Provider fallbacks can legitimately return metadata without artwork. Never
+  // let that blank response discard a cover URL or local cover we already know.
+  const previous = metadataCache[cacheKey(kind, title, externalId)]?.data;
+  if (previous) {
+    if (!data?.cover && previous.cover) data = { ...data, cover: previous.cover };
+    if (!data?.coverRemote && previous.coverRemote) data = { ...data, coverRemote: previous.coverRemote };
+    if (!data?.banner && previous.banner) data = { ...data, banner: previous.banner };
+    if (!data?.bannerRemote && previous.bannerRemote) data = { ...data, bannerRemote: previous.bannerRemote };
+  }
   if (data?.content) data.contentEstimateVersion = 1;
-  metadataCache[cacheKey(kind, title)] = { ts: Date.now(), data };
+  metadataCache[cacheKey(kind, title, externalId)] = { ts: Date.now(), data };
   persistCacheSoon();
   return data;
 }
-async function getMetadata(kind, title) {
-  const cached = cacheGet(kind, title);
+async function retryCachedArtwork(kind, title, externalId = '') {
+  const cached = metadataCache[cacheKey(kind, title, externalId)]?.data;
+  if (!cached || cached.cover || !cached.coverRemote) return null;
+  const refreshed = await localizeMetadataArtwork(cached);
+  if (!refreshed.cover) return null;
+  return cachePut(kind, title, refreshed, externalId);
+}
+async function getMetadata(kind, title, externalId = '') {
+  const cached = cacheGet(kind, title, externalId);
   if (cached) return cached;
+  // When metadata is already known, retry its original artwork URL before
+  // asking a fallback provider. This avoids replacing a good AniList cover URL
+  // with an unrelated or blank fallback when a provider is temporarily down.
+  const recoveredArtwork = await retryCachedArtwork(kind, title, externalId);
+  if (recoveredArtwork) return recoveredArtwork;
+  const previous = metadataCache[cacheKey(kind, title, externalId)]?.data;
   let data;
   if (kind === 'anilist') {
     try {
-      data = await metaAniList(title);
+      data = externalId ? await metaAniListById(externalId, title) : await metaAniList(title);
     } catch {
       try {
         data = await metaJikan(title);
@@ -1118,22 +1409,40 @@ async function getMetadata(kind, title) {
         };
       } catch {}
     }
-  } else if (kind === 'tvmaze') data = await metaTVMaze(title);
+  } else if (kind === 'tvmaze')
+    data = externalId ? await metaTVMazeById(externalId, title) : await metaTVMaze(title);
   else if (kind === 'wiki') data = await metaWiki(title);
   else throw new Error('unsupported-metadata-kind');
+  if (!data.cover && previous?.cover) data.cover = previous.cover;
+  if (!data.coverRemote && previous?.coverRemote) data.coverRemote = previous.coverRemote;
+  if (!data.banner && previous?.banner) data.banner = previous.banner;
+  if (!data.bannerRemote && previous?.bannerRemote) data.bannerRemote = previous.bannerRemote;
   data = await localizeMetadataArtwork(data);
-  return cachePut(kind, title, data);
+  return cachePut(kind, title, data, externalId);
+}
+async function mapWithConcurrency(values, limit, worker) {
+  const output = new Array(values.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(Math.max(1, limit), values.length) }, async () => {
+    while (cursor < values.length) {
+      const index = cursor++;
+      output[index] = await worker(values[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return output;
 }
 async function getMetadataBatch(items) {
   const results = [];
   const misses = [];
   for (const it of items) {
-    const cached = cacheGet(it.kind, it.title);
+    const cached = cacheGet(it.kind, it.title, it.externalId);
     if (cached) results.push({ key: it.key, data: cached });
     else misses.push(it);
   }
-  const ani = misses.filter((x) => x.kind === 'anilist');
-  const other = misses.filter((x) => x.kind !== 'anilist');
+  const ani = misses.filter((x) => x.kind === 'anilist' && !x.externalId);
+  const byExternalId = misses.filter((x) => x.externalId);
+  const other = misses.filter((x) => x.kind !== 'anilist' && !x.externalId);
   if (ani.length) {
     let rows = [];
     try {
@@ -1141,8 +1450,12 @@ async function getMetadataBatch(items) {
     } catch {
       rows = new Array(ani.length).fill(null);
     }
-    for (let i = 0; i < ani.length; i++) {
-      const it = ani[i];
+    const resolved = await mapWithConcurrency(ani, 4, async (it, i) => {
+      const previous = metadataCache[cacheKey(it.kind, it.title, it.externalId)]?.data;
+      const recoveredArtwork = await retryCachedArtwork(it.kind, it.title, it.externalId);
+      if (recoveredArtwork) {
+        return { key: it.key, data: recoveredArtwork };
+      }
       let data = rows[i];
       if (!data || !data.cover) {
         try {
@@ -1165,34 +1478,334 @@ async function getMetadataBatch(items) {
         } catch {}
       }
       if (data) {
+        if (!data.cover && previous?.cover) data.cover = previous.cover;
+        if (!data.coverRemote && previous?.coverRemote) data.coverRemote = previous.coverRemote;
+        if (!data.banner && previous?.banner) data.banner = previous.banner;
+        if (!data.bannerRemote && previous?.bannerRemote) data.bannerRemote = previous.bannerRemote;
         data = await localizeMetadataArtwork(data);
-        cachePut(it.kind, it.title, data);
-        results.push({ key: it.key, data });
-      } else results.push({ key: it.key, error: 'not-found' });
-    }
+        cachePut(it.kind, it.title, data, it.externalId);
+        return { key: it.key, data };
+      }
+      return { key: it.key, error: 'not-found' };
+    });
+    results.push(...resolved);
   }
-  for (const it of other) {
+  const remaining = [...other, ...byExternalId];
+  const resolved = await mapWithConcurrency(remaining, 4, async (it) => {
     try {
-      const data = await getMetadata(it.kind, it.title);
-      results.push({ key: it.key, data });
+      return { key: it.key, data: await getMetadata(it.kind, it.title, it.externalId) };
     } catch (e) {
-      results.push({ key: it.key, error: e?.message || 'not-found' });
+      return { key: it.key, error: e?.message || 'not-found' };
     }
-  }
+  });
+  results.push(...resolved);
   return results;
 }
 
-const CATALOG_TOTAL = (() => {
+function normalizeCatalogQuery(value = '') {
+  return String(value)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function openCatalogDatabase() {
+  if (catalogDatabase) return catalogDatabase;
+  if (!existsSync(CATALOG_DATABASE)) buildCatalog();
+  catalogDatabase = new DatabaseSync(CATALOG_DATABASE, { readOnly: true });
+  return catalogDatabase;
+}
+
+function catalogMeta(key, fallback = '') {
   try {
-    const c = JSON.parse(readFileSync(join(PUBLIC, 'catalog.json'), 'utf8'));
-    return Array.isArray(c.items) ? c.items.length : 0;
+    return (
+      openCatalogDatabase().prepare('SELECT value FROM catalog_meta WHERE key = ?').get(key)?.value ??
+      fallback
+    );
   } catch {
-    return 0;
+    return fallback;
   }
-})();
+}
+
+function catalogEntity(kind, fallback) {
+  try {
+    const value = openCatalogDatabase()
+      .prepare('SELECT data_json FROM catalog_entities WHERE kind = ?')
+      .get(kind)?.data_json;
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function catalogPersonalProgress(raw = {}) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return new Map();
+  const allowed = new Set(['Not started', 'Watching', 'Completed', 'On hold', 'Dropped']);
+  return new Map(
+    Object.entries(raw)
+      .slice(0, 20_000)
+      .filter(([id, value]) => /^[a-z][a-z0-9_-]*(?::[a-z0-9][a-z0-9_-]*)+$/i.test(id) && value)
+      .map(([id, value]) => [
+        id,
+        {
+          status: allowed.has(value.status) ? value.status : 'Not started',
+          rating: Math.max(0, Math.min(10, Number(value.rating) || 0)),
+        },
+      ]),
+  );
+}
+
+// List views only need the fields used to paint a card and queue a metadata
+// lookup.  Keeping award evidence, long notes and provider fields out of the
+// first-page response is what keeps a 10,000+ title catalog responsive.  The
+// complete record remains available through /api/catalog/title/:id when a
+// user opens that title.
+function catalogListItem(item = {}) {
+  const awards = Array.isArray(item.awards)
+    ? item.awards.map((award) => ({
+        programKey: award?.programKey || '',
+        result: award?.result || '',
+      }))
+    : [];
+  return {
+    id: item.id,
+    title: item.title,
+    year: item.year,
+    type: item.type,
+    origin: item.origin,
+    genres: item.genres,
+    tier: item.tier,
+    quality_band: item.quality_band,
+    rank: item.rank,
+    api: item.api,
+    lookupTitle: item.lookupTitle,
+    externalId: item.externalId,
+    content: item.content,
+    scores: item.scores,
+    fit_score: item.fit_score,
+    aliases: item.aliases,
+    awards,
+    catalogSummary: true,
+  };
+}
+
+function catalogPage(search = {}, rawProgress = {}) {
+  const database = openCatalogDatabase();
+  const progress = catalogPersonalProgress(rawProgress);
+  const scope = ['master', 'mature', 'kids'].includes(search.scope) ? search.scope : 'master';
+  const offset = Math.max(0, Math.min(Number.parseInt(search.offset, 10) || 0, 100_000));
+  const limit = Math.max(1, Math.min(Number.parseInt(search.limit, 10) || 60, 120));
+  const allowedSort = new Set([
+    'rank',
+    'overall',
+    'production',
+    'story',
+    'emotional',
+    'year',
+    'title',
+    'myrating',
+  ]);
+  const sort = allowedSort.has(search.sort) ? search.sort : 'rank';
+  const order = search.order === 'asc' ? 'asc' : 'desc';
+  const where = [];
+  const params = [];
+  const requestedIds = Array.isArray(search.ids)
+    ? [...new Set(search.ids.filter((id) => typeof id === 'string' && id.length <= 240))].slice(0, 20_000)
+    : [];
+  if (requestedIds.length) {
+    where.push(`id IN (${requestedIds.map(() => '?').join(', ')})`);
+    params.push(...requestedIds);
+  } else if (search.onlyIds === true) {
+    where.push('0 = 1');
+  }
+  if (scope === 'mature') where.push('is_mature = 1');
+  if (scope === 'kids') where.push('is_kids = 1');
+  const matureMode = String(search.matureMode || 'all');
+  if (scope === 'mature' && matureMode === 'hentai')
+    where.push("(LOWER(data_json) LIKE '%\"hentai\"%' OR LOWER(type) LIKE '%hentai%')");
+  if (scope === 'mature' && matureMode === 'ecchi')
+    where.push("(LOWER(data_json) LIKE '%\"ecchi\"%' OR LOWER(data_json) LIKE '%ecchi%')");
+  if (scope === 'mature' && matureMode === 'erotic')
+    where.push("(LOWER(data_json) LIKE '%\"erotic\"%' OR LOWER(data_json) LIKE '%sex comedy%')");
+  if (scope === 'mature' && matureMode === 'gore')
+    where.push("(json_extract(data_json, '$.content.gore') >= 4 OR LOWER(data_json) LIKE '%\"gore\"%')");
+  if (scope === 'mature' && matureMode === 'violence')
+    where.push(
+      "(json_extract(data_json, '$.content.violence') >= 5 OR LOWER(data_json) LIKE '%extreme violence%')",
+    );
+  if (scope === 'mature' && matureMode === 'disturbing')
+    where.push(
+      "(json_extract(data_json, '$.content.disturbing') >= 5 OR LOWER(data_json) LIKE '%\"disturbing\"%')",
+    );
+  if (search.q) {
+    where.push('search_text LIKE ?');
+    params.push(`%${normalizeCatalogQuery(search.q)}%`);
+  }
+  if (search.tier) {
+    where.push('tier = ?');
+    params.push(String(search.tier));
+  }
+  if (search.type) {
+    where.push('type = ?');
+    params.push(String(search.type));
+  }
+  if (search.genre) {
+    where.push('id IN (SELECT title_id FROM title_genres WHERE genre = ?)');
+    params.push(String(search.genre));
+  }
+  if (search.region) {
+    where.push('id IN (SELECT title_id FROM title_origins WHERE region = ?)');
+    params.push(String(search.region));
+  }
+  if (search.country) {
+    where.push('id IN (SELECT title_id FROM title_origins WHERE country = ?)');
+    params.push(String(search.country));
+  }
+  const completedIds = [...progress.entries()]
+    .filter(([, value]) => value.status === 'Completed')
+    .map(([id]) => id);
+  const status = String(search.status || '');
+  if (status) {
+    const matchingIds = [...progress.entries()]
+      .filter(([, value]) => value.status === status)
+      .map(([id]) => id);
+    if (status === 'Not started') {
+      if (progress.size) {
+        where.push(`id NOT IN (${[...progress.keys()].map(() => '?').join(', ')})`);
+        params.push(...progress.keys());
+      }
+    } else if (matchingIds.length) {
+      where.push(`id IN (${matchingIds.map(() => '?').join(', ')})`);
+      params.push(...matchingIds);
+    } else {
+      where.push('0 = 1');
+    }
+  }
+  if (search.hideCompleted === true || search.hideCompleted === 'true') {
+    if (completedIds.length) {
+      where.push(`id NOT IN (${completedIds.map(() => '?').join(', ')})`);
+      params.push(...completedIds);
+    }
+  }
+  if (search.award === 'any') where.push('has_award = 1');
+  if (search.award === 'winner') where.push('data_json LIKE \'%"result":"Winner"%\'');
+  if (search.award === 'nominee') where.push('data_json LIKE \'%"result":"Nominee"%\'');
+  if (search.award?.startsWith('program:')) {
+    where.push('data_json LIKE ?');
+    params.push(`%\"programKey\":\"${String(search.award).slice('program:'.length).replaceAll('%', '')}\"%`);
+  }
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const scoreColumn = {
+    overall: 'overall',
+    production: 'production',
+    story: 'story',
+    emotional: 'emotional',
+  }[sort];
+  const sortParams = [];
+  let sortSql;
+  if (sort === 'rank')
+    sortSql =
+      order === 'desc' ? 'rank IS NULL, rank ASC, title_key ASC' : 'rank IS NULL, rank DESC, title_key ASC';
+  else if (sort === 'year')
+    sortSql = order === 'desc' ? 'year = 0, year DESC, rank ASC' : 'year = 0, year ASC, rank ASC';
+  else if (sort === 'title')
+    sortSql = order === 'desc' ? 'title_key DESC, rank ASC' : 'title_key ASC, rank ASC';
+  else if (sort === 'myrating') {
+    const rated = [...progress.entries()].filter(([, value]) => value.rating > 0);
+    const expression = rated.length
+      ? `CASE id ${rated.map(() => 'WHEN ? THEN ?').join(' ')} ELSE 0 END`
+      : '0';
+    rated.forEach(([id, value]) => sortParams.push(id, value.rating));
+    sortSql = `${expression} = 0, ${expression} ${order === 'desc' ? 'DESC' : 'ASC'}, rank ASC`;
+    sortParams.push(...sortParams);
+  } else sortSql = `${scoreColumn} = 0, ${scoreColumn} ${order === 'desc' ? 'DESC' : 'ASC'}, rank ASC`;
+  const total = database.prepare(`SELECT COUNT(*) AS count FROM titles ${clause}`).get(...params).count;
+  const rows = database
+    .prepare(`SELECT data_json FROM titles ${clause} ORDER BY ${sortSql} LIMIT ? OFFSET ?`)
+    .all(...params, ...sortParams, limit, offset);
+  return {
+    items: rows.map((row) => catalogListItem(JSON.parse(row.data_json))),
+    total,
+    offset,
+    limit,
+    scope,
+    sort,
+    order,
+  };
+}
+
+function catalogFacets(scope = 'master') {
+  const database = openCatalogDatabase();
+  const titleScope = scope === 'mature' ? 'is_mature = 1' : scope === 'kids' ? 'is_kids = 1' : '';
+  const scopedTitles = titleScope ? ` WHERE ${titleScope}` : '';
+  const scopedTitleIds = titleScope ? ` WHERE title_id IN (SELECT id FROM titles${scopedTitles})` : '';
+  const values = (sql) =>
+    database
+      .prepare(sql)
+      .all()
+      .map((row) => row.value)
+      .filter(Boolean);
+  const countBy = (sql) =>
+    Object.fromEntries(
+      database
+        .prepare(sql)
+        .all()
+        .filter((row) => row.value)
+        .map((row) => [row.value, Number(row.count) || 0]),
+    );
+  const countriesByRegion = {};
+  database
+    .prepare(
+      `SELECT DISTINCT region, country FROM title_origins${scopedTitleIds}${scopedTitleIds ? ' AND' : ' WHERE'} country <> '' ORDER BY region, country COLLATE NOCASE`,
+    )
+    .all()
+    .forEach((row) => {
+      if (!countriesByRegion[row.region]) countriesByRegion[row.region] = [];
+      countriesByRegion[row.region].push(row.country);
+    });
+  return {
+    tiers: values(
+      `SELECT DISTINCT tier AS value FROM titles${scopedTitles}${scopedTitles ? ' AND' : ' WHERE'} tier <> ''`,
+    ),
+    types: values(
+      `SELECT DISTINCT type AS value FROM titles${scopedTitles}${scopedTitles ? ' AND' : ' WHERE'} type <> '' ORDER BY value COLLATE NOCASE`,
+    ),
+    genres: values(
+      `SELECT DISTINCT genre AS value FROM title_genres${scopedTitleIds} ORDER BY value COLLATE NOCASE`,
+    ),
+    regions: values(
+      `SELECT DISTINCT region AS value FROM title_origins${scopedTitleIds} ORDER BY value COLLATE NOCASE`,
+    ),
+    countries: values(
+      `SELECT DISTINCT country AS value FROM title_origins${scopedTitleIds} ORDER BY value COLLATE NOCASE`,
+    ),
+    regionCounts: countBy(
+      `SELECT region AS value, COUNT(DISTINCT title_id) AS count FROM title_origins${scopedTitleIds} GROUP BY region`,
+    ),
+    regionCountryCounts: countBy(
+      `SELECT region AS value, COUNT(DISTINCT country) AS count FROM title_origins${scopedTitleIds} GROUP BY region`,
+    ),
+    countriesByRegion,
+  };
+}
+
+const CATALOG_TOTAL = Number(catalogMeta('title_count', '0')) || 0;
 
 // Background artwork cache warmer
 const warmState = { running: false, total: 0, done: 0, failed: 0, startedAt: '', finishedAt: '' };
+let warmRetryTimer = null;
+function scheduleArtworkWarmRetry() {
+  clearTimeout(warmRetryTimer);
+  // Missing artwork is retried on the server, independent of browser state.
+  // This gives temporarily unavailable providers time to recover without
+  // requiring a restart, navigation, or an open modal.
+  warmRetryTimer = setTimeout(() => warmCatalogArtwork(), MISSING_COVER_RETRY_TTL);
+  warmRetryTimer.unref?.();
+}
 function coverFileCount() {
   try {
     return readdirSync(COVER_DIR).filter((n) => /\.(?:jpe?g|png|webp|avif|gif)$/i.test(n)).length;
@@ -1214,8 +1827,10 @@ async function warmCatalogArtwork() {
   warmState.failed = 0;
   warmState.done = 0;
   try {
-    const catalog = JSON.parse(await readFile(join(PUBLIC, 'catalog.json'), 'utf8'));
-    const all = (catalog.items || [])
+    const all = openCatalogDatabase()
+      .prepare('SELECT id, type, title, data_json FROM titles')
+      .all()
+      .map((row) => JSON.parse(row.data_json))
       .filter((x) => x?.id && ['anilist', 'tvmaze', 'wiki'].includes(x.api))
       .map((x) => ({ key: x.id, kind: x.api, title: x.lookupTitle || x.title }))
       .filter((x) => !hasLocalArtwork(x.kind, x.title));
@@ -1237,6 +1852,7 @@ async function warmCatalogArtwork() {
   } finally {
     warmState.running = false;
     warmState.finishedAt = new Date().toISOString();
+    scheduleArtworkWarmRetry();
   }
 }
 
@@ -1271,18 +1887,25 @@ async function serveStatic(req, res, pathName) {
   try {
     const st = await stat(file);
     if (!st.isFile()) throw new Error('not-file');
-    const data = await readFile(file);
     const ext = extname(file);
-    res.writeHead(200, {
+    const etag = `W/"${st.size}-${Math.trunc(st.mtimeMs)}"`;
+    const headers = {
       'Content-Type': mime[ext] || 'application/octet-stream',
-      'Cache-Control': isCover ? 'public, max-age=31536000, immutable' : 'no-cache',
+      ETag: etag,
+      'Cache-Control': isCover ? 'public, max-age=31536000, immutable' : 'public, max-age=0, must-revalidate',
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
       'X-Frame-Options': 'DENY',
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
       'Content-Security-Policy':
         "default-src 'self'; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
-    });
+    };
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, headers);
+      return res.end();
+    }
+    const data = await readFile(file);
+    res.writeHead(200, headers);
     res.end(data);
   } catch {
     send(res, 404, { error: 'not-found' });
@@ -1333,6 +1956,113 @@ export const server = http.createServer(async (req, res) => {
         },
       });
     }
+    if (u.pathname === '/api/catalog/bootstrap' && req.method === 'GET') {
+      const page = catalogPage({ scope: u.searchParams.get('scope') || 'master', limit: 60 });
+      return send(res, 200, {
+        ok: true,
+        sourceHash: catalogMeta('source_hash'),
+        generatedAt: catalogMeta('generated_at'),
+        total: CATALOG_TOTAL,
+        filmCount: Number(catalogMeta('film_count', '0')) || 0,
+        collectionCount: Number(catalogMeta('collection_count', '0')) || 0,
+        franchiseCount: Number(catalogMeta('franchise_count', '0')) || 0,
+        idMigrations: catalogEntity('idMigrations', {}),
+        facets: catalogFacets(),
+        scopeFacets: {
+          mature: catalogFacets('mature'),
+          kids: catalogFacets('kids'),
+        },
+        page,
+      });
+    }
+    if (u.pathname === '/api/catalog/titles' && req.method === 'GET') {
+      const search = Object.fromEntries(u.searchParams.entries());
+      return send(res, 200, { ok: true, ...catalogPage(search), sourceHash: catalogMeta('source_hash') });
+    }
+    if (u.pathname === '/api/catalog/query' && req.method === 'POST') {
+      if (!isSameOriginRequest(req)) return send(res, 403, { ok: false, error: 'catalog-query-forbidden' });
+      const body = await readBody(req, MAX_LOCAL_DATA_BODY);
+      if (
+        !body ||
+        typeof body !== 'object' ||
+        Array.isArray(body) ||
+        !body.query ||
+        typeof body.query !== 'object'
+      )
+        return send(res, 400, { ok: false, error: 'invalid-catalog-query' });
+      return send(res, 200, {
+        ok: true,
+        ...catalogPage(body.query, body.progress),
+        sourceHash: catalogMeta('source_hash'),
+      });
+    }
+    if (u.pathname.startsWith('/api/catalog/title/') && req.method === 'GET') {
+      const id = decodeURIComponent(u.pathname.slice('/api/catalog/title/'.length));
+      if (!id || id.length > 240) return send(res, 400, { ok: false, error: 'invalid-title-id' });
+      const row = openCatalogDatabase().prepare('SELECT data_json FROM titles WHERE id = ?').get(id);
+      return row
+        ? send(res, 200, {
+            ok: true,
+            item: JSON.parse(row.data_json),
+            sourceHash: catalogMeta('source_hash'),
+          })
+        : send(res, 404, { ok: false, error: 'title-not-found' });
+    }
+    if (u.pathname === '/api/catalog/entities' && req.method === 'GET') {
+      const kind = u.searchParams.get('kind');
+      if (!['collections', 'franchises'].includes(kind))
+        return send(res, 400, { ok: false, error: 'invalid-catalog-entity' });
+      return send(res, 200, { ok: true, kind, data: catalogEntity(kind, []) });
+    }
+    if (u.pathname === '/api/local-user-data' && req.method === 'GET') {
+      if (!isTrustedLocalRequest(req)) return send(res, 403, { ok: false, error: 'local-data-forbidden' });
+      return send(res, 200, { ok: true, storage: await readLocalUserData() });
+    }
+    if (u.pathname === '/api/local-user-data' && req.method === 'POST') {
+      if (!isTrustedLocalRequest(req) || !isSameOriginRequest(req))
+        return send(res, 403, { ok: false, error: 'local-data-forbidden' });
+      const body = await readBody(req, MAX_LOCAL_DATA_BODY);
+      if (
+        !exactKeys(body, new Set(['storage'])) ||
+        !body.storage ||
+        typeof body.storage !== 'object' ||
+        Array.isArray(body.storage) ||
+        Object.keys(body.storage).some((key) => !key.startsWith('uai:'))
+      )
+        return send(res, 400, { ok: false, error: 'invalid-local-data' });
+      await writeLocalUserData(body.storage);
+      return send(res, 200, { ok: true });
+    }
+    if (u.pathname === '/api/local-cache-data' && req.method === 'GET') {
+      if (!isTrustedLocalRequest(req)) return send(res, 403, { ok: false, error: 'local-data-forbidden' });
+      return send(res, 200, { ok: true, storage: await readLocalCacheData() });
+    }
+    if (u.pathname === '/api/local-cache-data' && req.method === 'POST') {
+      if (!isTrustedLocalRequest(req) || !isSameOriginRequest(req))
+        return send(res, 403, { ok: false, error: 'local-data-forbidden' });
+      const body = await readBody(req, MAX_LOCAL_DATA_BODY);
+      if (
+        !exactKeys(body, new Set(['storage'])) ||
+        !body.storage ||
+        typeof body.storage !== 'object' ||
+        Array.isArray(body.storage) ||
+        Object.keys(body.storage).some((key) => !key.startsWith('uai:'))
+      )
+        return send(res, 400, { ok: false, error: 'invalid-local-data' });
+      await writeLocalCacheData(body.storage);
+      return send(res, 200, { ok: true });
+    }
+    if (u.pathname === '/api/artwork/manual' && req.method === 'POST') {
+      if (!isTrustedLocalRequest(req) || !isSameOriginRequest(req))
+        return send(res, 403, { ok: false, error: 'artwork-forbidden' });
+      const body = await readBody(req);
+      const source = safeText(body?.url, 2000, true);
+      if (!source || !allowedCoverUrl(source))
+        return send(res, 400, { ok: false, error: 'unsupported-cover-source' });
+      const cover = await localizeCover(source, { verifyRemote: body?.verify === true });
+      if (!cover) return send(res, 422, { ok: false, error: 'cover-download-failed' });
+      return send(res, 200, { ok: true, cover, source });
+    }
     if (u.pathname === '/api/catalog/corrections/preview' && req.method === 'POST') {
       const body = await readBody(req);
       if (!exactKeys(body, new Set(['code'])) || typeof body.code !== 'string')
@@ -1356,6 +2086,39 @@ export const server = http.createServer(async (req, res) => {
         ok: true,
         applied: correction.entries.length,
         additions: correction.entries.filter((entry) => entry.operation === 'add').length,
+      });
+    }
+    if (u.pathname === '/api/catalog/release-updates/preview' && req.method === 'POST') {
+      const body = await readBody(req);
+      if (!exactKeys(body, new Set(['package'])) || !body.package || typeof body.package !== 'object')
+        return send(res, 400, { ok: false, error: 'invalid-release-update-package' });
+      const catalog = await readCatalogSource();
+      return send(res, 200, { ok: true, preview: previewReleaseUpdatePackage(catalog, body.package) });
+    }
+    if (u.pathname === '/api/catalog/release-updates/apply' && req.method === 'POST') {
+      if (
+        !isTrustedLocalRequest(req) ||
+        !isSameOriginRequest(req) ||
+        req.headers['x-uai-catalog-token'] !== UPDATE_TOKEN
+      )
+        return send(res, 403, { ok: false, error: 'catalog-write-forbidden' });
+      const body = await readBody(req);
+      if (
+        !exactKeys(body, new Set(['package', 'selectedUpdateIds'])) ||
+        !body.package ||
+        typeof body.package !== 'object' ||
+        !Array.isArray(body.selectedUpdateIds)
+      )
+        return send(res, 400, { ok: false, error: 'invalid-release-update-package' });
+      const result = await applyReleaseUpdates(body.package, body.selectedUpdateIds);
+      const unranked = result.applied.filter(
+        (entry) => !result.catalog.items.find((item) => item.id === entry.id)?.rank,
+      );
+      return send(res, 200, {
+        ok: true,
+        applied: result.applied,
+        summary: result.summary,
+        unranked: unranked.length,
       });
     }
     if (u.pathname === '/api/update' && req.method === 'POST') {
@@ -1403,15 +2166,18 @@ export const server = http.createServer(async (req, res) => {
           !raw ||
           typeof raw !== 'object' ||
           Array.isArray(raw) ||
-          Object.keys(raw).some((k) => !['key', 'kind', 'title'].includes(k))
+          Object.keys(raw).some((k) => !['key', 'kind', 'title', 'externalId'].includes(k))
         )
           return send(res, 400, { ok: false, error: 'invalid-batch' });
         const key = safeText(raw.key, 180, true),
           title = safeText(raw.title, 180, true),
-          kind = raw.kind;
+          kind = raw.kind,
+          externalId = safeText(raw.externalId || '', 80, false);
         if (!key || !title || !['anilist', 'tvmaze', 'wiki'].includes(kind))
           return send(res, 400, { ok: false, error: 'invalid-batch' });
-        items.push({ key, kind, title });
+        if (externalId && !/^\d+$/.test(externalId))
+          return send(res, 400, { ok: false, error: 'invalid-batch' });
+        items.push({ key, kind, title, externalId });
       }
       const results = await getMetadataBatch(items);
       return send(res, 200, { ok: true, results });
@@ -1429,7 +2195,21 @@ export const server = http.createServer(async (req, res) => {
       if (!title) return send(res, 400, { error: 'invalid-title' });
       if (!['anilist', 'tvmaze'].includes(kind))
         return send(res, 400, { error: 'unsupported-metadata-kind' });
-      const data = kind === 'anilist' ? await getAniListSeries(title) : await getTVMazeSeries(title);
+      const provider = u.searchParams.get('provider') || '';
+      const id = safeText(u.searchParams.get('id') || '', 32, false);
+      if (provider && !['anilist', 'tvmaze'].includes(provider))
+        return send(res, 400, { error: 'unsupported-metadata-kind' });
+      if (id && !/^\d+$/.test(id)) return send(res, 400, { error: 'invalid-series-id' });
+      const data = await getSeriesWithFallback(kind, title, { provider, id });
+      return send(res, 200, { ok: true, data });
+    }
+    if (u.pathname === '/api/series/candidates' && req.method === 'GET') {
+      const kind = u.searchParams.get('kind') || '';
+      const title = safeText(u.searchParams.get('title') || '', 180, true);
+      if (!title) return send(res, 400, { ok: false, error: 'invalid-title' });
+      if (!['anilist', 'tvmaze'].includes(kind))
+        return send(res, 400, { ok: false, error: 'unsupported-metadata-kind' });
+      const data = await getSeriesCandidates(kind, title);
       return send(res, 200, { ok: true, data });
     }
     if (u.pathname === '/api/resolve' && req.method === 'GET') {
@@ -1466,6 +2246,12 @@ export const server = http.createServer(async (req, res) => {
       'unknown-catalog-title',
       'catalog-correction-conflict',
       'empty-correction-package',
+      'invalid-release-update-package',
+      'unsupported-release-update-package',
+      'release-update-add-missing-fields',
+      'unreleased-editorial-update',
+      'invalid-release-update-selection',
+      'release-update-not-applicable',
     ].includes(msg)
       ? 400
       : 500;
@@ -1478,8 +2264,13 @@ export function startServer(port = PORT, host = HOST) {
     const address = server.address();
     const activePort = typeof address === 'object' && address ? address.port : port;
     console.log(`Ultimate Animation Index on http://localhost:${activePort} · UserList key ${KEY_ID}`);
+    // A full catalog artwork crawl is intentionally opt-in. With a catalog of
+    // thousands of titles it competes with visible-card lookups, generates
+    // unnecessary provider traffic, and makes the artwork counter look stuck.
+    // The browser queue already caches artwork for rendered and opened titles
+    // and keeps doing so while the user navigates.
     setTimeout(() => {
-      if (process.env.UAI_SKIP_WARM !== '1') warmCatalogArtwork();
+      if (process.env.UAI_WARM_ALL_ARTWORK === '1') warmCatalogArtwork();
     }, 900);
   });
 }

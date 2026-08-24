@@ -1,6 +1,6 @@
 {
   "name": "ultimate-animation-index",
-  "version": "2.3.2",
+  "version": "3.0.0",
   "description": "A self-hosted, ranked watchlist for anime and animation from around the world.",
   "homepage": "https://github.com/Firehawk52/ultimate-animation-index#readme",
   "repository": {
@@ -17,10 +17,15 @@
     "start": "node scripts/start.js",
     "update": "node scripts/update.js",
     "build:catalog": "node scripts/build-catalog.js",
-    "check": "node --check src/server.js && node --check public/app.js && node --check public/rating-format.js && node --check public/user-backup.js && node --check scripts/start.js && node --check scripts/update.js && node --check scripts/runtime.js && node --check scripts/build-catalog.js && node --check scripts/catalog-corrections.js && node --check scripts/build-catalog.mjs && node --check scripts/restart-after-update.mjs",
-    "format": "prettier --write src/*.js scripts/*.js scripts/*.mjs public/app.js public/rating-format.js public/user-backup.js public/index.html public/styles.css package.json docker-compose.yml README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md .github/**/*.yml .github/*.md",
-    "format:check": "prettier --check src/*.js scripts/*.js scripts/*.mjs public/app.js public/rating-format.js public/user-backup.js public/index.html public/styles.css package.json docker-compose.yml README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md .github/**/*.yml .github/*.md",
-    "verify": "npm run format:check && npm run check && npm run build:catalog"
+    "audit:catalog": "node scripts/audit-catalog.js",
+    "check:translations": "node scripts/check-translations.js",
+    "test:release-updates": "node tests/release-updates.test.js",
+    "test:catalog-formats": "node tests/catalog-formats.test.js",
+    "check": "node --check src/server.js && node --check public/app.js && node --check public/geography.js && node --check public/i18n.js && node --check public/rating-format.js && node --check public/award-format.js && node --check public/series-labels.js && node --check public/user-backup.js && node --check scripts/start.js && node --check scripts/update.js && node --check scripts/runtime.js && node --check scripts/build-catalog.js && node --check scripts/catalog-store.js && node --check scripts/audit-catalog.js && node --check scripts/checkpoint-import.js && node --check scripts/check-checkpoint.js && node --check scripts/import-checkpoint.js && node --check scripts/check-translations.js && node --check scripts/catalog-corrections.js && node --check scripts/release-updates.js && node --check tests/release-updates.test.js && node --check tests/catalog-formats.test.js && node --check scripts/build-catalog.mjs && node --check scripts/restart-after-update.mjs",
+    "check:checkpoint": "node scripts/check-checkpoint.js",
+    "format": "prettier --write src/*.js scripts/*.js scripts/*.mjs tests/*.js public/app.js public/geography.js public/i18n.js public/rating-format.js public/award-format.js public/series-labels.js public/user-backup.js public/index.html public/styles.css public/translations/**/*.json package.json docker-compose.yml docs/**/*.md README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md .github/**/*.yml .github/*.md",
+    "format:check": "prettier --check src/*.js scripts/*.js scripts/*.mjs tests/*.js public/app.js public/geography.js public/i18n.js public/rating-format.js public/award-format.js public/series-labels.js public/user-backup.js public/index.html public/styles.css public/translations/**/*.json package.json docker-compose.yml docs/**/*.md README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md .github/**/*.yml .github/*.md",
+    "verify": "npm run format:check && npm run check && npm run check:translations && npm run test:release-updates && npm run test:catalog-formats && node scripts/build-catalog.js --verify"
   },
   "engines": {
     "node": "^20.19.0 || ^22.16.0 || >=24.0.0"
