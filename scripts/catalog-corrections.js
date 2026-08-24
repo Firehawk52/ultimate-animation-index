@@ -5,18 +5,6 @@ const SAFE_ID = /^[matwc]:[A-Za-z0-9._:-]{1,150}$/;
 const SCORE_KEYS = ['overall', 'production', 'story', 'emotional'];
 const CONTENT_KEYS = ['sex', 'nudity', 'violence', 'gore', 'disturbing'];
 
-function normalizeCoverSource(value) {
-  if (value == null || value === '') return '';
-  const source = safeText(value, 2000, false);
-  try {
-    const url = new URL(source);
-    if (url.protocol !== 'https:') fail('invalid-correction-package');
-  } catch {
-    fail('invalid-correction-package');
-  }
-  return source;
-}
-
 function fail(code) {
   throw new Error(code);
 }
@@ -75,32 +63,19 @@ export function catalogSnapshot(item) {
     content: normalizeCatalogContent(
       Object.fromEntries([...CONTENT_KEYS, 'tags'].map((key) => [key, item.content?.[key]])),
     ),
-    coverSource: normalizeCoverSource(item.coverSource || ''),
   };
 }
 
 function normalizeValues(value) {
-  if (!exactKeys(value, ['scores', 'content', 'coverSource'])) fail('invalid-correction-package');
+  if (!exactKeys(value, ['scores', 'content'])) fail('invalid-correction-package');
   return {
     scores: normalizeCatalogScores(value.scores),
     content: normalizeCatalogContent(value.content),
-    coverSource: normalizeCoverSource(value.coverSource),
   };
 }
 
 function normalizeAddition(value) {
-  const keys = [
-    'year',
-    'type',
-    'origin',
-    'api',
-    'lookupTitle',
-    'externalId',
-    'genres',
-    'scores',
-    'content',
-    'coverSource',
-  ];
+  const keys = ['year', 'type', 'origin', 'api', 'lookupTitle', 'externalId', 'genres', 'scores', 'content'];
   if (!exactKeys(value, keys)) fail('invalid-correction-package');
   const api = safeText(value.api, 20);
   if (!['anilist', 'tvmaze', 'wiki', 'none'].includes(api)) fail('invalid-correction-package');
@@ -114,7 +89,6 @@ function normalizeAddition(value) {
     genres: safeText(value.genres, 500, false),
     scores: normalizeCatalogScores(value.scores),
     content: normalizeCatalogContent(value.content),
-    coverSource: normalizeCoverSource(value.coverSource),
   };
 }
 
@@ -195,8 +169,6 @@ function applyScores(item, values) {
   item.story = values.scores.story;
   item.tier = tier;
   item.quality_band = tier;
-  if (values.coverSource) item.coverSource = values.coverSource;
-  else delete item.coverSource;
 }
 
 export function applyCorrectionPackage(catalog, input, { generatedAt = new Date() } = {}) {
@@ -219,7 +191,6 @@ export function applyCorrectionPackage(catalog, input, { generatedAt = new Date(
       api: entry.values.api,
       lookupTitle: entry.values.lookupTitle,
       externalId: entry.values.externalId,
-      coverSource: entry.values.coverSource,
       provisional: false,
       aliases: [],
       sourceUrl: '',

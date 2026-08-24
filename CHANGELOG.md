@@ -4,52 +4,6 @@ All notable changes to Ultimate Animation Index are documented here.
 
 ## Unreleased
 
-## [3.0.0] - 2026-08-24
-
-### Added
-
-- Added the expanded 10,765-title curated catalog foundation, including aliases, awards, release metadata, richer editorial fields and future-ready franchise step data.
-- Added **Regions**, **Mature** and **For Kids** discovery areas with independent search, filters, sorting, paging, URL state and private backup support.
-- Added region and country browsing for every catalog area, including co-productions, normalized country aliases and Regional / International groupings.
-- Added a dedicated For Kids presentation with kid-safe catalog editing controls and a `Not for Kids` editorial override.
-- Added award summaries and expandable source-linked recognition records in title details, with reusable program marks for current and future award programs.
-- Added complete catalog-profile presentation in title details for pace, commitment, darkness, explicitness, editorial scores, caveats and watch notes.
-- Added persistent URL navigation for tabs, filters, sorting, expanded franchise guides and open detail or collection dialogs.
-- Added local JSON user-data storage with a safe migration from browser storage, private backup/import and smaller progress records.
-- Added local and official translation-pack workflows, contributor credits, translation templates, change detection and validation.
-- Added safer cover handling: background artwork caching, manual cover-source saving, downloaded covers, wrong-cover reports and portable review data.
-- Added explicit feature-film watch tracking and improved franchise controls so watch status stays synchronized across title, franchise and episode views.
-
-### Changed
-
-- Replaced the separate Western Ani destination with the inclusive **Regions** browser. Master now contains every animated title, regardless of origin.
-- Reworked franchise guides for story-order steps, live-action context, episode ranges, time ranges, resume notes and large-franchise navigation.
-- Unified global number formatting, technical numeric typography, accessible modern tooltips, sorting behavior and rating-scale handling across the interface.
-- Expanded personal ratings to ten consistent steps in letter, numeric and half-star formats, with matching filters and personal sorting.
-- Reworked Mature Content cards and title details around compact severity cards, explanatory labels and aligned visual controls.
-- Kept title cards compact while moving rich catalog evidence, awards and editorial information into a structured detail view.
-- Made artwork and metadata loading visible-title-only, resilient to missing covers and independent from navigation or modal state.
-- Updated catalog correction and release-update workflows for the expanded source schema, review packages and direct local approval.
-- Reorganized documentation and contributor guidance for the larger catalog, translations, release packages and local data model.
-
-### Performance
-
-- Replaced the generated browser `public/catalog.json` catalog with a generated local `data/catalog.sqlite` index.
-- The browser now requests a small indexed page of card summaries instead of downloading and parsing the entire catalog on startup.
-- Added server-side search, filters, sorting and pagination, plus on-demand full title, franchise and collection loading.
-- Detail dialogs now provide immediate visual feedback while complete title data loads locally in the background.
-- Removed the legacy `catalog.json`, Brotli and gzip artifacts; SQLite is now the sole generated catalog runtime database.
-
-### Fixed
-
-- Improved provider matching and fallback behavior for episodes, feature films, aliases and manually selected metadata candidates.
-- Preserved expanded franchise guides while statuses are changed and kept progress synchronized between every relevant view.
-- Restored on-demand title loading for Collections and corrected Regions cards to show whole-catalog title and country totals rather than only the currently visible page.
-- Corrected Region, Mature and For Kids filter facets so URL-restored filters and country choices always use the full relevant catalog instead of a rendered page of cards.
-- Made the launcher explicitly identify an out-of-date catalog when an older local server is already running, and made release verification use an isolated temporary SQLite build on Windows.
-- Corrected cover-cache progress behavior, stale cover handling and missing-cover recovery without interrupting user navigation.
-- Fixed pluralized country counts, rating display consistency and several details-panel typography and layout regressions.
-
 ## [2.3.2] - 2026-08-20
 
 ### Changed
