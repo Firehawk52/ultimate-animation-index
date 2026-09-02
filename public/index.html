@@ -14,10 +14,10 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700&family=Michroma&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700&family=Fredoka:wdth,wght@75..125,500;75..125,600;75..125,700&family=Michroma&family=Nunito+Sans:opsz,wght@6..12,400..900&family=Space+Grotesk:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css?v=2.3.2-michroma-numerics-1" />
+    <link rel="stylesheet" href="styles.css?v=editor-import-action-1" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">Skip to content</a>
@@ -30,7 +30,19 @@
       <div class="topline">
         <span>ANIME &amp; ANIMATION</span><span>FILMS &amp; SERIES</span><span>WATCH ORDERS</span>
       </div>
-      <button id="quickAddBtn" class="slash-button small" type="button">+ ADD TITLE</button>
+      <div class="top-actions" aria-label="Workspace actions">
+        <button
+          id="quickAddBtn"
+          class="slash-button small editor-top-button"
+          type="button"
+          aria-label="Open the advanced editor"
+        >
+          <span><b>EDITOR</b><small>titles · routes · metadata</small></span>
+        </button>
+        <button id="shareImportBtn" class="slash-button small share-import-top" type="button">
+          <span><b>SHARE INBOX</b><small>import a link</small></span>
+        </button>
+      </div>
     </header>
 
     <aside id="updateNotice" class="update-notice" aria-label="Software update" aria-live="polite" hidden>
@@ -55,11 +67,13 @@
       <button class="rail-tab active" data-tab="master" type="button" aria-current="page">
         <b>01</b><span>MASTER</span>
       </button>
-      <button class="rail-tab" data-tab="collections" type="button"><b>02</b><span>COLLECTIONS</span></button>
-      <button class="rail-tab" data-tab="franchises" type="button"><b>03</b><span>FRANCHISES</span></button>
-      <button class="rail-tab" data-tab="adult" type="button"><b>04</b><span>MATURE</span></button>
-      <button class="rail-tab" data-tab="favorites" type="button"><b>05</b><span>FAVORITES</span></button>
-      <button class="rail-tab" data-tab="userlist" type="button"><b>06</b><span>MY LIBRARY</span></button>
+      <button class="rail-tab" data-tab="regions" type="button"><b>02</b><span>REGIONS</span></button>
+      <button class="rail-tab" data-tab="collections" type="button"><b>03</b><span>COLLECTIONS</span></button>
+      <button class="rail-tab" data-tab="franchises" type="button"><b>04</b><span>FRANCHISES</span></button>
+      <button class="rail-tab" data-tab="adult" type="button"><b>05</b><span>MATURE</span></button>
+      <button class="rail-tab" data-tab="kids" type="button"><b>06</b><span>FOR KIDS</span></button>
+      <button class="rail-tab" data-tab="favorites" type="button"><b>07</b><span>FAVORITES</span></button>
+      <button class="rail-tab" data-tab="userlist" type="button"><b>08</b><span>MY LIBRARY</span></button>
     </nav>
 
     <main id="mainContent" class="main-shell">
@@ -93,26 +107,36 @@
             <input
               id="searchInput"
               type="search"
-              placeholder="Search titles, genres or studios"
+              placeholder="Search titles, genres, studios or awards"
               autocomplete="off"
             />
           </div>
-          <select id="tierFilter" aria-label="Quality tier">
+          <select id="tierFilter" aria-label="Quality tier" data-i18n-skip-content>
             <option value="">ALL TIERS</option>
           </select>
-          <select id="typeFilter" aria-label="Format">
+          <select id="typeFilter" aria-label="Format" data-i18n-skip-content>
             <option value="">ALL FORMATS</option>
           </select>
-          <select id="genreFilter" aria-label="Genre">
+          <select id="genreFilter" aria-label="Genre" data-i18n-skip-content>
             <option value="">ALL GENRES</option>
+          </select>
+          <select id="awardFilter" aria-label="Award recognition" data-i18n-skip-content>
+            <option value="">ALL AWARDS</option>
+          </select>
+          <select id="regionFilter" aria-label="Region" data-i18n-skip-content>
+            <option value="">ALL REGIONS</option>
+          </select>
+          <select id="countryFilter" aria-label="Country" data-i18n-skip-content>
+            <option value="">ALL COUNTRIES</option>
           </select>
           <select id="statusFilter" aria-label="Watch status">
             <option value="">ALL STATUS</option>
             <option>Not started</option>
             <option>Watching</option>
-            <option>Completed</option>
+            <option>Watched</option>
             <option>On hold</option>
             <option>Dropped</option>
+            <option>Skipped</option>
           </select>
           <select id="sortSelect" aria-label="Sort titles by">
             <option value="rank">MASTER RANK</option>
@@ -143,13 +167,98 @@
         <div class="result-line">
           <span><b id="resultCount">0</b> TITLES</span>
           <div>
-            <label><input id="hideCompleted" type="checkbox" /> HIDE COMPLETED</label
+            <label><input id="hideCompleted" type="checkbox" /> HIDE WATCHED</label
             ><label><input id="customOnly" type="checkbox" /> MY ADDED TITLES</label>
           </div>
         </div>
         <section class="card-grid" id="cards"></section>
         <div class="load-wrap">
           <button id="loadMoreBtn" class="slash-button" type="button">LOAD MORE</button>
+        </div>
+      </section>
+
+      <section id="regionsTab" class="panel">
+        <header class="section-head angled-head western-head">
+          <div>
+            <div class="kicker">GLOBAL DISCOVERY</div>
+            <h2>REGIONS</h2>
+          </div>
+          <p>
+            Browse the full collection by region or country. Co-productions appear under every origin they
+            share.
+          </p>
+        </header>
+        <section class="origin-atlas" id="originAtlas" aria-label="Browse titles by region"></section>
+        <div class="toolbar-shell western-tools">
+          <div class="search-block">
+            <label class="search-prompt" for="westernSearch">SEARCH //</label
+            ><input
+              id="westernSearch"
+              type="search"
+              placeholder="Search titles, countries, genres or studios"
+              autocomplete="off"
+            />
+          </div>
+          <select id="westernTierFilter" aria-label="Region quality tier" data-i18n-skip-content>
+            <option value="">ALL TIERS</option>
+          </select>
+          <select id="westernTypeFilter" aria-label="Region format" data-i18n-skip-content>
+            <option value="">ALL FORMATS</option>
+          </select>
+          <select id="westernGenreFilter" aria-label="Region genre" data-i18n-skip-content>
+            <option value="">ALL GENRES</option>
+          </select>
+          <select id="westernRegionFilter" aria-label="Region" data-i18n-skip-content>
+            <option value="">ALL REGIONS</option>
+          </select>
+          <select id="westernCountryFilter" aria-label="Country" data-i18n-skip-content>
+            <option value="">ALL COUNTRIES</option>
+          </select>
+          <select id="westernStatusFilter" aria-label="Region watch status">
+            <option value="">ALL STATUS</option>
+            <option>Not started</option>
+            <option>Watching</option>
+            <option>Watched</option>
+            <option>On hold</option>
+            <option>Dropped</option>
+            <option>Skipped</option>
+          </select>
+          <select id="westernSort" aria-label="Sort region titles by">
+            <option value="rank">MASTER RANK</option>
+            <option value="overall">OVERALL SCORE</option>
+            <option value="production">PRODUCTION</option>
+            <option value="story">STORY</option>
+            <option value="emotional">EMOTIONAL PAYOFF</option>
+            <option value="year">RELEASE DATE</option>
+            <option value="title">NAME</option>
+            <option value="myrating">MY RATING</option>
+          </select>
+          <button
+            id="westernSortOrder"
+            class="master-sort-order"
+            type="button"
+            aria-label="Change to ascending order"
+            data-tooltip="Change to ascending order"
+          ></button>
+          <button
+            id="westernViewToggle"
+            class="square-button"
+            type="button"
+            data-tooltip="Toggle compact view"
+          >
+            ▥
+          </button>
+        </div>
+        <div class="result-line">
+          <span><b id="westernResultCount">0</b> TITLES</span>
+          <div>
+            <label><input id="westernHideCompleted" type="checkbox" /> HIDE WATCHED</label
+            ><label><input id="westernCustomOnly" type="checkbox" /> MY ADDED TITLES</label>
+          </div>
+        </div>
+        <section class="card-grid" id="westernCards"></section>
+        <div class="load-wrap">
+          <button id="westernLoadMoreBtn" class="slash-button" type="button">LOAD MORE</button>
         </div>
       </section>
 
@@ -231,26 +340,36 @@
             <input
               id="adultSearch"
               type="search"
-              placeholder="Search mature titles, genres or studios"
+              placeholder="Search mature titles, genres, studios or awards"
               autocomplete="off"
             />
           </div>
-          <select id="adultTierFilter" aria-label="Mature Content quality tier">
+          <select id="adultTierFilter" aria-label="Mature Content quality tier" data-i18n-skip-content>
             <option value="">ALL TIERS</option>
           </select>
-          <select id="adultTypeFilter" aria-label="Mature Content format">
+          <select id="adultTypeFilter" aria-label="Mature Content format" data-i18n-skip-content>
             <option value="">ALL FORMATS</option>
           </select>
-          <select id="adultGenreFilter" aria-label="Mature Content genre">
+          <select id="adultGenreFilter" aria-label="Mature Content genre" data-i18n-skip-content>
             <option value="">ALL GENRES</option>
+          </select>
+          <select id="adultAwardFilter" aria-label="Mature Content award recognition" data-i18n-skip-content>
+            <option value="">ALL AWARDS</option>
+          </select>
+          <select id="adultRegionFilter" aria-label="Mature Content region" data-i18n-skip-content>
+            <option value="">ALL REGIONS</option>
+          </select>
+          <select id="adultCountryFilter" aria-label="Mature Content country" data-i18n-skip-content>
+            <option value="">ALL COUNTRIES</option>
           </select>
           <select id="adultStatusFilter" aria-label="Mature Content watch status">
             <option value="">ALL STATUS</option>
             <option>Not started</option>
             <option>Watching</option>
-            <option>Completed</option>
+            <option>Watched</option>
             <option>On hold</option>
             <option>Dropped</option>
+            <option>Skipped</option>
           </select>
           <select id="adultSort" aria-label="Sort Mature Content titles by">
             <option value="rank">MASTER RANK</option>
@@ -273,6 +392,85 @@
         <section class="card-grid adult-grid" id="adultCards"></section>
       </section>
 
+      <section id="kidsTab" class="panel kids-panel">
+        <header class="section-head angled-head kids-head">
+          <div>
+            <div class="kicker">FAMILY-FRIENDLY DISCOVERY</div>
+            <h2>FOR KIDS</h2>
+          </div>
+          <p>
+            A bright, curated route through animation tagged for families and younger viewers. Use the same
+            ranking and watch tools as the Master list.
+          </p>
+        </header>
+        <div class="toolbar-shell kids-tools">
+          <div class="search-block">
+            <label class="search-prompt" for="kidsSearch">SEARCH //</label>
+            <input
+              id="kidsSearch"
+              type="search"
+              placeholder="Search family titles, genres or studios"
+              autocomplete="off"
+            />
+          </div>
+          <select id="kidsTierFilter" aria-label="For Kids quality tier" data-i18n-skip-content>
+            <option value="">ALL TIERS</option>
+          </select>
+          <select id="kidsTypeFilter" aria-label="For Kids format" data-i18n-skip-content>
+            <option value="">ALL FORMATS</option>
+          </select>
+          <select id="kidsGenreFilter" aria-label="For Kids genre" data-i18n-skip-content>
+            <option value="">ALL GENRES</option>
+          </select>
+          <select id="kidsRegionFilter" aria-label="For Kids region" data-i18n-skip-content>
+            <option value="">ALL REGIONS</option>
+          </select>
+          <select id="kidsCountryFilter" aria-label="For Kids country" data-i18n-skip-content>
+            <option value="">ALL COUNTRIES</option>
+          </select>
+          <select id="kidsStatusFilter" aria-label="For Kids watch status">
+            <option value="">ALL STATUS</option>
+            <option>Not started</option>
+            <option>Watching</option>
+            <option>Watched</option>
+            <option>On hold</option>
+            <option>Dropped</option>
+            <option>Skipped</option>
+          </select>
+          <select id="kidsSort" aria-label="Sort For Kids titles by">
+            <option value="rank">MASTER RANK</option>
+            <option value="overall">OVERALL SCORE</option>
+            <option value="production">PRODUCTION</option>
+            <option value="story">STORY</option>
+            <option value="emotional">EMOTIONAL PAYOFF</option>
+            <option value="year">RELEASE DATE</option>
+            <option value="title">NAME</option>
+            <option value="myrating">MY RATING</option>
+          </select>
+          <button
+            id="kidsSortOrder"
+            class="master-sort-order"
+            type="button"
+            aria-label="Change to ascending order"
+            data-tooltip="Change to ascending order"
+          ></button>
+          <button id="kidsViewToggle" class="square-button" type="button" data-tooltip="Toggle compact view">
+            ▥
+          </button>
+        </div>
+        <div class="result-line kids-result-line">
+          <span><b id="kidsResultCount">0</b> TITLES</span>
+          <div>
+            <label><input id="kidsHideCompleted" type="checkbox" /> HIDE WATCHED</label
+            ><label><input id="kidsCustomOnly" type="checkbox" /> MY ADDED TITLES</label>
+          </div>
+        </div>
+        <section class="card-grid kids-grid" id="kidsCards"></section>
+        <div class="load-wrap">
+          <button id="kidsLoadMoreBtn" class="slash-button" type="button">LOAD MORE</button>
+        </div>
+      </section>
+
       <section id="favoritesTab" class="panel">
         <header class="section-head angled-head">
           <div>
@@ -290,13 +488,502 @@
             <input
               id="favoriteSearch"
               type="search"
-              placeholder="Search favorite titles, genres or studios"
+              placeholder="Search favorite titles, genres, studios or awards"
               autocomplete="off"
             />
           </div>
+          <select id="favoriteSort" aria-label="Sort favorite titles by">
+            <option value="rank">MASTER RANK</option>
+            <option value="overall">OVERALL SCORE</option>
+            <option value="production">PRODUCTION</option>
+            <option value="story">STORY</option>
+            <option value="emotional">EMOTIONAL PAYOFF</option>
+            <option value="year">RELEASE DATE</option>
+            <option value="title">NAME</option>
+            <option value="myrating">MY RATING</option>
+          </select>
+          <select id="favoriteAwardFilter" aria-label="Favorite award recognition" data-i18n-skip-content>
+            <option value="">ALL AWARDS</option>
+          </select>
+          <select id="favoriteRegionFilter" aria-label="Favorite region" data-i18n-skip-content>
+            <option value="">ALL REGIONS</option>
+          </select>
+          <select id="favoriteCountryFilter" aria-label="Favorite country" data-i18n-skip-content>
+            <option value="">ALL COUNTRIES</option>
+          </select>
+          <button
+            id="favoriteSortOrder"
+            class="master-sort-order"
+            type="button"
+            aria-label="Change to ascending order"
+            data-tooltip="Change to ascending order"
+          ></button>
           <span id="favoriteCount">0 FAVORITES</span>
         </div>
         <section class="card-grid" id="favoriteCards"></section>
+      </section>
+
+      <section id="editorTab" class="panel">
+        <header class="section-head angled-head editor-header">
+          <div>
+            <div class="kicker">LOCAL EDITORIAL WORKSPACE</div>
+            <h2>EDITOR CONSOLE</h2>
+          </div>
+          <p>
+            Choose an assignment. The editor opens only the tools needed for that job, then saves a local
+            review-ready draft.
+          </p>
+        </header>
+        <section id="editorMission" class="editor-mission" aria-labelledby="editorMissionTitle">
+          <div class="editor-mission-copy">
+            <span class="kicker">START HERE // 01</span>
+            <h3 id="editorMissionTitle">WHAT ARE YOU WORKING ON?</h3>
+            <p>
+              Start with a clear task. You can change route details, episode information and metadata without
+              touching raw code.
+            </p>
+          </div>
+          <div class="editor-mission-grid">
+            <button class="editor-mission-action is-primary" type="button" data-editor-mission="new-title">
+              <span class="editor-mission-icon" aria-hidden="true"
+                ><svg viewBox="0 0 24 24"><path d="M12 4v16M4 12h16" /></svg
+              ></span>
+              <span
+                ><b>ADD A NEW TITLE</b
+                ><small>Create a local film, series, OVA or special with its complete metadata.</small></span
+              >
+              <i aria-hidden="true">01</i>
+            </button>
+            <button class="editor-mission-action" type="button" data-editor-mission="edit-title">
+              <span class="editor-mission-icon" aria-hidden="true"
+                ><svg viewBox="0 0 24 24"><path d="m4 17.5-.5 3 3-.5L18 8.5 15.5 6zM14.5 7l2.5 2.5" /></svg
+              ></span>
+              <span
+                ><b>EDIT AN EXISTING TITLE</b
+                ><small>Correct metadata, sources, seasons or individual episode names.</small></span
+              >
+              <i aria-hidden="true">02</i>
+            </button>
+            <button class="editor-mission-action" type="button" data-editor-mission="new-franchise">
+              <span class="editor-mission-icon" aria-hidden="true"
+                ><svg viewBox="0 0 24 24"><path d="M5 5h6v6H5zM13 13h6v6h-6zM8 11v3h5M11 8h3" /></svg
+              ></span>
+              <span
+                ><b>CREATE A FRANCHISE ROUTE</b
+                ><small
+                  >Build a guided viewing path with titles, episode ranges, branches and notes.</small
+                ></span
+              >
+              <i aria-hidden="true">03</i>
+            </button>
+            <button class="editor-mission-action" type="button" data-editor-mission="edit-franchise">
+              <span class="editor-mission-icon" aria-hidden="true"
+                ><svg viewBox="0 0 24 24">
+                  <path d="M5 5h6v6H5zM13 13h6v6h-6zM8 11v3h5M11 8h3" />
+                  <path d="m16 4 3 3" /></svg
+              ></span>
+              <span
+                ><b>EDIT A FRANCHISE ROUTE</b
+                ><small
+                  >Reorder steps, split episode ranges, add branches and connect catalog titles.</small
+                ></span
+              >
+              <i aria-hidden="true">04</i>
+            </button>
+          </div>
+          <div class="editor-mission-foot">
+            <span>LOCAL-ONLY CHANGES</span><span>EXPORTABLE FOR REVIEW</span><span>NO RAW JSON REQUIRED</span>
+          </div>
+        </section>
+        <section id="editorSearchDock" class="editor-search-dock" hidden aria-live="polite">
+          <div class="editor-search-dock-head">
+            <div>
+              <span class="kicker" id="editorSidebarKicker">FIND A RECORD</span>
+              <h3 id="editorSearchTitle">SEARCH THE CATALOG</h3>
+              <p id="editorSidebarHelp">
+                Start typing to find the exact title or franchise guide you want to edit.
+              </p>
+            </div>
+            <span class="editor-search-dock-index" id="editorSearchIndex">02</span>
+          </div>
+          <div id="editorTitleSearchGroup" class="editor-search-control">
+            <label class="field-label"
+              >FIND A TITLE<input
+                id="editorTitleSearch"
+                type="search"
+                placeholder="Search title or alias…"
+                autocomplete="off"
+            /></label>
+          </div>
+          <div id="editorFranchiseSearchGroup" class="editor-search-control" hidden>
+            <label class="field-label"
+              >FIND A FRANCHISE GUIDE<input
+                id="editorFranchiseSearch"
+                type="search"
+                placeholder="Search franchise name or route…"
+                autocomplete="off"
+            /></label>
+          </div>
+          <div id="editorTitleResults" class="editor-title-results"></div>
+          <div id="editorFranchiseResults" class="editor-title-results" hidden></div>
+          <details class="editor-draft-drawer">
+            <summary>LOCAL DRAFTS <span>OPEN</span></summary>
+            <div id="editorDraftList" class="editor-draft-list"></div>
+          </details>
+        </section>
+        <div class="editor-shell">
+          <section class="editor-workspace" aria-live="polite">
+            <div id="editorEmpty" class="editor-empty">
+              <span class="editor-empty-signal" aria-hidden="true"></span><b>SELECT AN EDITORIAL ASSIGNMENT</b
+              ><span>Choose one of the four clear paths above. Your working tools will appear here.</span>
+            </div>
+            <form id="editorForm" hidden>
+              <div class="editor-workspace-head">
+                <div>
+                  <span class="kicker" id="editorRecordKind">LOCAL RECORD</span>
+                  <h3 id="editorRecordTitle">NEW TITLE</h3>
+                </div>
+                <span id="editorDraftState" class="editor-draft-state">UNSAVED</span>
+              </div>
+              <nav id="editorWorkflowNav" class="editor-workflow-nav" aria-label="Editor sections">
+                <button type="button" data-editor-pane="identity">01 IDENTITY</button>
+                <button type="button" data-editor-pane="curation">02 CURATION</button>
+                <button type="button" data-editor-pane="sources">03 SOURCES</button>
+                <button type="button" data-editor-pane="episodes">04 EPISODES</button>
+                <button type="button" data-editor-pane="franchise">05 FRANCHISE ROUTE</button>
+              </nav>
+              <div
+                class="editor-section-label editor-wide"
+                data-editor-title-section
+                data-editor-pane-group="identity"
+              >
+                IDENTITY &amp; SUMMARY
+              </div>
+              <div class="editor-field-grid">
+                <label class="field-label" data-editor-pane-group="identity"
+                  >TITLE<input id="editorTitle" maxlength="180" required
+                /></label>
+                <label class="field-label" data-editor-pane-group="identity"
+                  >YEAR<input id="editorYear" type="number" min="0" max="2200"
+                /></label>
+                <label class="field-label" data-editor-pane-group="identity"
+                  >FORMAT<select id="editorType">
+                    <option>Series</option>
+                    <option>Film</option>
+                    <option>OVA</option>
+                    <option>ONA</option>
+                    <option>Special</option>
+                    <option>Donghua series</option>
+                    <option>Western series</option>
+                    <option>Western film</option>
+                    <option>Adult / Hentai</option>
+                  </select></label
+                >
+                <label class="field-label" data-editor-pane-group="identity"
+                  >ORIGIN<input id="editorOrigin" maxlength="120"
+                /></label>
+                <label class="field-label editor-wide" data-editor-pane-group="identity"
+                  >ALIASES<input id="editorAliases" placeholder="One alias per comma"
+                /></label>
+                <label class="field-label editor-wide" data-editor-pane-group="identity"
+                  >GENRES / TAGS<input id="editorGenres" maxlength="600"
+                /></label>
+                <section
+                  id="editorSummaryPanel"
+                  class="editor-summary-panel editor-wide"
+                  data-editor-pane-group="identity"
+                >
+                  <div class="editor-summary-head">
+                    <div>
+                      <span class="kicker">TITLE SUMMARY</span>
+                      <h4>SUMMARY &amp; LANGUAGES</h4>
+                      <p>
+                        The English summary is the fallback. Add translated versions below; title details
+                        automatically use the reader's interface language when available.
+                      </p>
+                    </div>
+                  </div>
+                  <label class="field-label editor-wide"
+                    >SUMMARY<textarea id="editorDescription" maxlength="12000"></textarea>
+                  </label>
+                  <div class="editor-summary-translation-head">
+                    <div>
+                      <b>OTHER LANGUAGES</b>
+                      <span>Add a localized summary without replacing the primary text.</span>
+                    </div>
+                    <button id="editorAddSummaryLanguage" class="slash-button small" type="button">
+                      ADD TRANSLATED SUMMARY
+                    </button>
+                  </div>
+                  <div id="editorSummaryTranslationBuilder" class="editor-summary-translation-builder"></div>
+                </section>
+                <section
+                  class="editor-metadata-panel editor-wide"
+                  data-editor-pane-group="curation"
+                  aria-labelledby="editorCuratedMetadataTitle"
+                >
+                  <div class="editor-builder-head">
+                    <div>
+                      <span class="kicker">CURATED METADATA</span>
+                      <h4 id="editorCuratedMetadataTitle">QUALITY &amp; CONTENT GUIDANCE</h4>
+                      <p>
+                        Use editorial ratings and clear content guidance. These changes stay local until
+                        exported.
+                      </p>
+                    </div>
+                  </div>
+                  <div class="editor-metadata-split">
+                    <fieldset class="editor-metric-set">
+                      <legend>QUALITY SCORES</legend>
+                      <label class="field-label"
+                        >OVERALL<input id="editorScoreOverall" type="number" min="0" max="100" step="1"
+                      /></label>
+                      <label class="field-label"
+                        >PRODUCTION<input
+                          id="editorScoreProduction"
+                          type="number"
+                          min="0"
+                          max="10"
+                          step="0.1"
+                      /></label>
+                      <label class="field-label"
+                        >STORY<input id="editorScoreStory" type="number" min="0" max="10" step="0.1"
+                      /></label>
+                      <label class="field-label"
+                        >EMOTIONAL PAYOFF<input
+                          id="editorScoreEmotional"
+                          type="number"
+                          min="0"
+                          max="10"
+                          step="0.1"
+                      /></label>
+                    </fieldset>
+                    <fieldset class="editor-metric-set">
+                      <legend>CONTENT GUIDANCE</legend>
+                      <label class="field-label"
+                        >SEXUAL CONTENT<input id="editorContentSex" type="number" min="0" max="5" step="1"
+                      /></label>
+                      <label class="field-label"
+                        >NUDITY<input id="editorContentNudity" type="number" min="0" max="5" step="1"
+                      /></label>
+                      <label class="field-label"
+                        >VIOLENCE<input id="editorContentViolence" type="number" min="0" max="5" step="1"
+                      /></label>
+                      <label class="field-label"
+                        >GORE<input id="editorContentGore" type="number" min="0" max="5" step="1"
+                      /></label>
+                      <label class="field-label"
+                        >DISTURBING CONTENT<input
+                          id="editorContentDisturbing"
+                          type="number"
+                          min="0"
+                          max="5"
+                          step="1"
+                      /></label>
+                    </fieldset>
+                  </div>
+                </section>
+                <section
+                  class="editor-awards-panel editor-wide"
+                  data-editor-pane-group="curation"
+                  aria-labelledby="editorAwardsTitle"
+                >
+                  <div class="editor-builder-head">
+                    <div>
+                      <span class="kicker">RECOGNITION</span>
+                      <h4 id="editorAwardsTitle">AWARDS</h4>
+                      <p>Add the award, year and result as ordinary fields.</p>
+                    </div>
+                    <button id="editorAddAward" class="slash-button small" type="button">ADD AWARD</button>
+                  </div>
+                  <div id="editorAwardBuilder" class="editor-award-list"></div>
+                </section>
+                <label class="field-label editor-internal-field" hidden
+                  >SCORES JSON<textarea
+                    id="editorScores"
+                    placeholder='{"overall":0,"production":0,"story":0,"emotional":0}'
+                  ></textarea>
+                </label>
+                <label class="field-label editor-internal-field" hidden
+                  >CONTENT GUIDANCE JSON<textarea
+                    id="editorContent"
+                    placeholder='{"sex":0,"nudity":0,"violence":0,"gore":0,"disturbing":0,"tags":[]}'
+                  ></textarea>
+                </label>
+                <label class="field-label editor-wide editor-internal-field" hidden
+                  >AWARDS JSON<textarea
+                    id="editorAwards"
+                    placeholder='[{"name":"Award","year":2024,"result":"Winner"}]'
+                  ></textarea>
+                </label>
+                <label class="field-label" data-editor-pane-group="sources"
+                  >LOOKUP TITLE<input id="editorLookupTitle" maxlength="180"
+                /></label>
+                <label class="field-label" data-editor-pane-group="sources"
+                  >SOURCE URL<input id="editorSourceUrl" type="url" maxlength="2000"
+                /></label>
+                <section
+                  class="editor-cover-panel editor-wide"
+                  data-editor-pane-group="sources"
+                  aria-labelledby="editorCoverTitle"
+                >
+                  <div>
+                    <span class="kicker">COVER CORRECTION</span>
+                    <h4 id="editorCoverTitle">SUBMIT BETTER ARTWORK</h4>
+                    <p>
+                      Use a verified HTTPS image link or attach one local image for editorial review. It never
+                      replaces an installed cover pack automatically.
+                    </p>
+                  </div>
+                  <div class="editor-cover-controls">
+                    <label class="field-label"
+                      >COVER URL (OPTIONAL)<input
+                        id="editorCoverUrl"
+                        type="url"
+                        maxlength="2000"
+                        placeholder="https://…"
+                    /></label>
+                    <label class="file-picker" for="editorCoverFile"
+                      ><span>CHOOSE COVER IMAGE</span
+                      ><small>PNG, JPG, WEBP · max 600 KB · embedded in the editor review</small></label
+                    >
+                    <input id="editorCoverFile" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+                    <button id="editorCoverRemove" class="text-button danger" type="button">
+                      REMOVE COVER SUBMISSION
+                    </button>
+                  </div>
+                  <div id="editorCoverPreview" class="editor-cover-preview">
+                    No cover correction attached.
+                  </div>
+                </section>
+                <label class="field-label editor-wide" data-editor-pane-group="curation"
+                  >WATCH NOTE<textarea id="editorWatchNote" maxlength="3000"></textarea>
+                </label>
+                <label class="field-label editor-wide" data-editor-pane-group="curation"
+                  >CAVEAT<textarea id="editorCaveat" maxlength="3000"></textarea>
+                </label>
+                <div
+                  class="editor-section-label editor-wide"
+                  data-editor-title-section
+                  data-editor-pane-group="episodes"
+                >
+                  EPISODES
+                </div>
+                <label class="field-label editor-wide editor-internal-field" hidden
+                  >EPISODE DATA<textarea
+                    id="editorEpisodes"
+                    placeholder='[{"seasonNumber":1,"episodes":[{"number":1,"title":"Episode title"}]}]'
+                  ></textarea
+                  ><small class="field-help"
+                    >Use this when provider episode data is missing or needs correction.</small
+                  ></label
+                >
+                <label class="field-label editor-wide editor-internal-field" hidden
+                  >FRANCHISE ROUTE DATA<textarea
+                    id="editorFranchise"
+                    placeholder='{"name":"Guide name","steps":[]}'
+                  ></textarea
+                  ><small class="field-help"
+                    >Route edits stay local until you export a review package.</small
+                  ></label
+                >
+                <div class="editor-franchise-meta editor-wide" data-editor-pane-group="franchise">
+                  <label class="field-label"
+                    >FRANCHISE NAME<input
+                      id="editorFranchiseName"
+                      maxlength="180"
+                      placeholder="Optional guide name"
+                  /></label>
+                  <label class="field-label"
+                    >ROUTE SUMMARY<textarea
+                      id="editorFranchiseSummary"
+                      maxlength="2000"
+                      placeholder="Explain how this route should be followed…"
+                    ></textarea>
+                  </label>
+                </div>
+                <div
+                  class="editor-episode-builder editor-wide"
+                  id="editorEpisodeBuilder"
+                  data-editor-pane-group="episodes"
+                ></div>
+                <div
+                  class="editor-franchise-builder editor-wide"
+                  id="editorFranchiseBuilder"
+                  data-editor-pane-group="franchise"
+                ></div>
+              </div>
+              <div class="editor-actions">
+                <button id="editorSaveBtn" class="slash-button hot" type="submit">SAVE TO THIS DEVICE</button
+                ><button id="editorExportBtn" class="slash-button" type="button">
+                  NEXT: PREPARE SHARE PACKAGE
+                </button>
+              </div>
+              <div id="editorResult" class="import-result"></div>
+            </form>
+          </section>
+        </div>
+        <section id="editorPackagePanel" class="editor-export-panel">
+          <div class="editor-package-head">
+            <div>
+              <div class="kicker">STEP 2 · SEND FOR REVIEW</div>
+              <h3>EDITOR REVIEW</h3>
+              <p>
+                Prepare your saved drafts, create a temporary review link, and send it to the person reviewing
+                the changes. Nothing is applied automatically.
+              </p>
+            </div>
+            <div class="editor-package-count" id="editorPackageDraftCount">0 DRAFTS READY</div>
+          </div>
+          <ol class="editor-package-flow" aria-label="How sharing works">
+            <li><b>1</b><span>Save one or more changes to this device.</span></li>
+            <li><b>2</b><span>Create one temporary review link.</span></li>
+            <li><b>3</b><span>Copy the link and send it for review.</span></li>
+          </ol>
+          <div class="editor-package-actions">
+            <button class="slash-button hot" type="button" data-editor-export-package>
+              PREPARE EDITOR REVIEW
+            </button>
+            <button id="editorPublishShare" class="slash-button" type="button" disabled>
+              CREATE REVIEW LINK
+            </button>
+            <button id="editorCopyShare" class="slash-button" type="button" disabled>COPY REVIEW LINK</button>
+          </div>
+          <div id="editorTurnstile" class="turnstile-slot" hidden></div>
+          <textarea id="editorExportCode" readonly hidden aria-hidden="true"></textarea>
+          <input id="editorShareLink" class="share-link-output" type="text" readonly hidden />
+          <div id="editorPackageStatus" class="editor-package-status">
+            Save one or more changes first, then create a share package when you are ready.
+          </div>
+          <section id="editorOfficialReview" class="editor-official-review" hidden aria-live="polite">
+            <div>
+              <span class="kicker">LOCAL CATALOG REVIEW</span>
+              <h4>APPLY REVIEW TO THIS INSTALLATION</h4>
+              <p>
+                Validate the received changes before writing them to this installation's catalog source and
+                rebuilding its SQLite index. This does not publish anything or affect other users.
+              </p>
+            </div>
+            <div class="editor-official-actions">
+              <button id="editorPreviewOfficial" class="slash-button" type="button">VALIDATE CHANGES</button>
+              <button id="editorApplyOfficial" class="slash-button hot" type="button" disabled>
+                APPLY LOCALLY
+              </button>
+            </div>
+            <div id="editorOfficialReviewResult" class="import-result"></div>
+          </section>
+          <section class="editor-package-drafts" aria-labelledby="editorPackageDraftsTitle">
+            <div class="editor-package-drafts-head">
+              <div>
+                <span class="kicker">LOCAL CHANGES</span>
+                <h4 id="editorPackageDraftsTitle">SAVED DRAFTS</h4>
+              </div>
+              <span>OPEN TO EDIT OR REMOVE</span>
+            </div>
+            <div id="editorPackageDraftList" class="editor-draft-list"></div>
+          </section>
+          <div id="editorPackageResult" class="import-result"></div>
+        </section>
       </section>
 
       <section id="userlistTab" class="panel">
@@ -305,70 +992,214 @@
             <div class="kicker">YOUR PERSONAL SPACE</div>
             <h2>MY LIBRARY</h2>
           </div>
-          <p>Manage your global preferences, personal data and portable sharing codes in one place.</p>
+          <p>
+            Receive recommendations, share your own taste, and manage this installation. Use <b>EDITOR</b> for
+            titles, episodes and franchise routes.
+          </p>
         </header>
-        <section class="library-preferences" aria-labelledby="ratingDisplayTitle">
+        <section id="shareImportPanel" class="share-import-panel" aria-labelledby="shareImportTitle">
           <div>
-            <div class="kicker">GLOBAL PREFERENCE</div>
-            <h3 id="ratingDisplayTitle">RATING DISPLAY</h3>
+            <div class="kicker">SHARE INBOX</div>
+            <h3 id="shareImportTitle">OPEN A SHARE LINK</h3>
             <p>
-              Choose how ratings appear everywhere in your library, including title cards and personal
-              ratings.
+              Paste a link. We inspect exactly what it contains before anything is added to this installation.
             </p>
           </div>
-          <label class="library-rating-format">
-            <span>RATING FORMAT</span>
-            <select id="ratingFormatSelect" aria-label="Global rating format">
-              <option value="tier">LETTER SCALE</option>
-              <option value="ten">10 SCALE</option>
-              <option value="stars">5 STARS</option>
-            </select>
-          </label>
+          <div class="share-import-controls">
+            <label class="field-label"
+              >SHARE LINK<input
+                id="shareLinkInput"
+                type="url"
+                placeholder="Paste a share link…"
+                autocomplete="off"
+            /></label>
+            <button id="previewShareLink" class="slash-button hot" type="button">REVIEW LINK</button>
+          </div>
+          <div id="shareImportPreview" class="share-import-preview" hidden></div>
+          <label id="shareSourceNameGroup" class="field-label" hidden
+            >SAVE AS<input id="shareSourceName" type="text" maxlength="40" placeholder="e.g. Alex / Jordan"
+          /></label>
+          <button id="applyShareLink" class="slash-button" type="button" disabled>ADD TO MY LIBRARY</button>
+          <button id="applyShareCommunity" class="slash-button hot" type="button" hidden>
+            ADD TO CATALOG
+          </button>
         </section>
         <div id="securityState" class="security-strip">
           <b>SECURE SHARING</b><span>Checking signature service...</span>
         </div>
-        <div class="userlist-grid">
-          <section class="user-panel export-panel">
-            <div class="panel-no">A</div>
-            <h3>EXPORT A SHARED LIST</h3>
+        <div class="userlist-grid library-primary-grid">
+          <section class="user-panel export-panel library-share-panel">
+            <div class="kicker">SEND ONLY YOUR TASTE</div>
+            <h3>SHARE RECOMMENDATION LIST</h3>
             <p>
-              Includes your <b>Recommended</b> and <b>Not recommended</b> marks, plus titles you added
-              yourself with their genres, content labels and severity ratings. Watch progress, personal
-              ratings, favorites and private notes stay on this device.
+              Shares recommendations, fully watched titles and any titles you added. It never includes episode
+              progress, ratings, favorites or notes.
             </p>
             <div class="userlist-summary" id="userListSummary"></div>
-            <button id="generateCodeBtn" class="slash-button hot wide" type="button">
-              GENERATE SIGNED CODE
+            <div class="share-flow" aria-label="Share link steps">
+              <span><b>01</b> Prepare</span><span><b>02</b> Verify</span><span><b>03</b> Copy link</span>
+            </div>
+            <button id="generateCodeBtn" class="slash-button hot wide" type="button">PREPARE MY LIST</button>
+            <button id="publishListShare" class="slash-button wide" type="button" disabled>
+              CREATE SHARE LINK
             </button>
-            <textarea id="exportCode" spellcheck="false" readonly placeholder="UWL.…"></textarea>
-            <button id="copyCodeBtn" class="slash-button wide" type="button">COPY CODE</button>
-          </section>
-          <section class="user-panel import-panel">
-            <div class="panel-no">B</div>
-            <h3>IMPORT A SHARED LIST</h3>
-            <p>
-              The code is verified before anything is imported. The source name is chosen locally and is never
-              stored in the shared code.
-            </p>
-            <label class="field-label"
-              >LOCAL SOURCE NAME<input
-                type="text"
-                id="importSourceName"
-                maxlength="40"
-                placeholder="e.g. Alex / Reddit user / Jordan"
-            /></label>
-            <label class="field-label"
-              >SIGNED USERLIST CODE<textarea
-                id="importCode"
-                spellcheck="false"
-                placeholder="Paste UWL…"
-              ></textarea>
-            </label>
-            <button id="importCodeBtn" class="slash-button hot wide" type="button">VERIFY + IMPORT</button>
+            <button id="copyListShare" class="slash-button wide" type="button" disabled>
+              COPY SHARE LINK
+            </button>
+            <div id="listTurnstile" class="turnstile-slot" hidden></div>
+            <textarea id="exportCode" spellcheck="false" readonly hidden></textarea>
+            <input id="listShareLink" class="share-link-output" type="text" readonly hidden />
             <div id="importResult" class="import-result"></div>
           </section>
-          <section class="user-panel add-panel">
+          <section class="user-panel sources-panel library-sources-panel">
+            <div class="kicker">WHAT YOU RECEIVED</div>
+            <h3>IMPORTED LISTS</h3>
+            <p>
+              Each imported source remains separate. Its recommendations and completed-title signals appear on
+              every affected title, and can be removed without affecting your own library.
+            </p>
+            <div id="sourceList" class="source-list"></div>
+          </section>
+        </div>
+        <details class="library-settings-drawer">
+          <summary>
+            <span
+              ><b>INSTALLATION SETTINGS</b
+              ><small>Rating display · interface language · optional covers</small></span
+            ><i>OPEN <em aria-hidden="true">+</em></i>
+          </summary>
+          <div class="library-settings-content">
+            <section class="library-preferences" aria-labelledby="ratingDisplayTitle">
+              <div>
+                <div class="kicker">GLOBAL PREFERENCE</div>
+                <h3 id="ratingDisplayTitle">RATING DISPLAY</h3>
+                <p>
+                  Choose how ratings appear everywhere in your library, including title cards and personal
+                  ratings.
+                </p>
+              </div>
+              <label class="library-rating-format">
+                <span>RATING FORMAT</span>
+                <select id="ratingFormatSelect" aria-label="Global rating format">
+                  <option value="tier">LETTER SCALE</option>
+                  <option value="ten">10 SCALE</option>
+                  <option value="stars">5 STARS</option>
+                </select>
+              </label>
+            </section>
+            <section class="library-preferences" aria-labelledby="languageDisplayTitle">
+              <div>
+                <div class="kicker">COMMUNITY LOCALIZATION</div>
+                <h3 id="languageDisplayTitle">INTERFACE LANGUAGE</h3>
+                <p>
+                  Set the interface language. Create, extend or install a local translation only when you need
+                  it.
+                </p>
+              </div>
+              <div class="library-language-controls">
+                <label class="library-rating-format">
+                  <span>LANGUAGE</span>
+                  <select id="interfaceLanguage" aria-label="Interface language" data-i18n-skip-content>
+                    <option value="en">ENGLISH</option>
+                  </select>
+                </label>
+                <div id="translationCredits" class="translation-credits" data-i18n-skip hidden></div>
+                <div id="officialTranslationUpdate" class="translation-update" hidden>
+                  <span id="officialTranslationUpdateText" data-i18n-skip></span>
+                  <button id="installOfficialTranslationUpdate" class="slash-button" type="button">
+                    INSTALL OFFICIAL UPDATE
+                  </button>
+                </div>
+                <details class="translation-maintenance">
+                  <summary>
+                    <span
+                      ><b>MANAGE LOCAL TRANSLATIONS</b
+                      ><small>Create, extend or install a translation pack</small></span
+                    ><i>OPEN <em aria-hidden="true">+</em></i>
+                  </summary>
+                  <div>
+                    <button id="exportTranslationTemplate" class="slash-button wide" type="button">
+                      DOWNLOAD TRANSLATION TEMPLATE
+                    </button>
+                    <div class="field-label translation-file-label">
+                      <span>SELECT EXISTING TRANSLATION</span>
+                      <label class="file-picker" data-file-picker>
+                        <input
+                          id="translationPackFile"
+                          type="file"
+                          accept="application/json,.json"
+                          data-file-empty-label="NO TRANSLATION FILE SELECTED"
+                        />
+                        <span class="file-picker-action">SELECT TRANSLATION FILE</span>
+                        <span class="file-picker-name" data-file-picker-name aria-live="polite"
+                          >NO TRANSLATION FILE SELECTED</span
+                        >
+                      </label>
+                    </div>
+                    <button id="downloadTranslationUpdate" class="slash-button wide" type="button" disabled>
+                      DOWNLOAD UPDATED TEMPLATE
+                    </button>
+                    <button id="importTranslationPack" class="slash-button hot wide" type="button" disabled>
+                      INSTALL TRANSLATION PACK LOCALLY
+                    </button>
+                    <div id="translationResult" class="import-result" data-i18n-skip></div>
+                  </div>
+                </details>
+              </div>
+            </section>
+            <section class="library-preferences cover-preferences" aria-labelledby="artworkPreferenceTitle">
+              <div>
+                <div class="kicker">OPTIONAL MEDIA</div>
+                <h3 id="artworkPreferenceTitle">COVER ARTWORK</h3>
+                <p>Choose who controls cover packs for this installation.</p>
+              </div>
+              <div
+                id="coverPackMode"
+                class="cover-pack-mode"
+                role="radiogroup"
+                aria-label="Cover pack preference"
+              >
+                <button type="button" data-cover-mode="never" role="radio" aria-checked="false">
+                  <b>NEVER DOWNLOAD COVER PACKS</b
+                  ><small>No checks, no prompts. Existing local files remain untouched.</small>
+                </button>
+                <button type="button" data-cover-mode="own" role="radio" aria-checked="false">
+                  <b>USE OWN COVER PACK</b
+                  ><small>Use artwork already installed locally. No official update checks.</small>
+                </button>
+                <button type="button" data-cover-mode="download" role="radio" aria-checked="true">
+                  <b>DOWNLOAD COVER PACKS</b
+                  ><small>Check for official updates and always ask before downloading.</small>
+                </button>
+              </div>
+              <div class="catalog-update-preference">
+                <div class="kicker">LIBRARY DATA</div>
+                <h4>CATALOG UPDATES</h4>
+                <p>Title additions, removals and corrections are separate from optional cover packs.</p>
+                <div
+                  id="catalogUpdateMode"
+                  class="cover-pack-mode"
+                  role="radiogroup"
+                  aria-label="Catalog update preference"
+                >
+                  <button type="button" data-catalog-update-mode="auto" role="radio" aria-checked="true">
+                    <b>UPDATE LIBRARY AUTOMATICALLY</b
+                    ><small>Check hourly and quietly refresh the library when it changes.</small>
+                  </button>
+                  <button type="button" data-catalog-update-mode="manual" role="radio" aria-checked="false">
+                    <b>ONLY WHEN I CHECK</b
+                    ><small>Keep the current library until you explicitly check for updates.</small>
+                  </button>
+                </div>
+                <button id="checkLibraryUpdates" class="slash-button wide" type="button">
+                  CHECK LIBRARY UPDATES
+                </button>
+              </div>
+            </section>
+          </div>
+        </details>
+        <div class="userlist-grid">
+          <section class="user-panel add-panel" hidden>
             <div class="panel-no">C</div>
             <h3>ADD A MISSING TITLE</h3>
             <p>
@@ -418,102 +1249,98 @@
             </form>
             <div id="addResult" class="import-result"></div>
           </section>
-          <section class="user-panel sources-panel">
-            <div class="panel-no">D</div>
-            <h3>IMPORTED SOURCES</h3>
-            <p>
-              One global title record can carry any number of source opinions. Re-importing the same title
-              never creates another card.
-            </p>
-            <div id="sourceList" class="source-list"></div>
-          </section>
-          <section class="user-panel backup-panel">
-            <div class="panel-no">E</div>
-            <div class="backup-copy">
-              <div class="kicker">PRIVATE LOCAL ARCHIVE</div>
-              <h3>BACKUP + RESTORE</h3>
+          <section class="user-panel release-updates-panel">
+            <div class="release-updates-copy">
+              <div class="kicker">CURATED RELEASE MONITOR</div>
+              <h3>RELEASE UPDATES</h3>
               <p>
-                Download your watch statuses, ratings, private notes, favorites, episode progress, custom
-                titles, imported sources and saved interface preferences. The JSON file stays on your device
-                and is never sent to the signing server. It is readable and not encrypted, so keep it private.
+                Review a curated package before this installation changes. Nothing is written until you
+                preview, select and explicitly apply individual changes.
               </p>
-              <div class="backup-summary" id="backupSummary"></div>
-              <button id="exportBackupBtn" class="slash-button hot wide" type="button">
-                DOWNLOAD PRIVATE BACKUP
-              </button>
-            </div>
-            <div class="backup-restore">
-              <label class="field-label backup-file-label"
-                >BACKUP FILE<input id="backupFile" type="file" accept="application/json,.json"
-              /></label>
-              <div id="backupPreview" class="backup-preview">
-                <b>NO BACKUP SELECTED</b>
-                <span>Choose a UAI JSON backup to validate it before importing.</span>
+              <div class="field-label release-package-file">
+                <span>RELEASE UPDATE PACKAGE</span>
+                <label class="file-picker" data-file-picker>
+                  <input
+                    id="releaseUpdateFile"
+                    type="file"
+                    accept="application/json,.json"
+                    data-file-empty-label="NO PACKAGE SELECTED"
+                  />
+                  <span class="file-picker-action">SELECT RELEASE PACKAGE</span>
+                  <span class="file-picker-name" data-file-picker-name aria-live="polite"
+                    >NO PACKAGE SELECTED</span
+                  >
+                </label>
               </div>
-              <label class="field-label"
-                >IMPORT MODE<select id="backupImportMode">
-                  <option value="merge">Merge with current local data</option>
-                  <option value="replace">Replace all local user data</option>
-                </select></label
-              >
-              <button id="importBackupBtn" class="slash-button wide" type="button" disabled>
-                IMPORT VALIDATED BACKUP
-              </button>
-              <div id="backupResult" class="import-result"></div>
-            </div>
-          </section>
-          <section class="user-panel correction-panel">
-            <div class="correction-copy">
-              <div class="panel-no">F</div>
-              <div class="kicker">CURATED DATABASE</div>
-              <h3>CATALOG CORRECTIONS</h3>
-              <p>
-                Rating edits and completed custom-title candidates are saved to this installation or shared as
-                a review package. A package contains data only and never grants access to another computer or
-                repository.
-              </p>
-              <div id="correctionDraftSummary" class="correction-summary"></div>
-              <div id="correctionDraftList" class="correction-draft-list"></div>
-              <button id="generateCorrectionCode" class="slash-button hot wide" type="button">
-                GENERATE REVIEW PACKAGE
-              </button>
-              <textarea id="correctionExportCode" spellcheck="false" readonly placeholder="UAIC.…"></textarea>
-              <div class="correction-button-row">
-                <button id="copyCorrectionCode" class="slash-button wide" type="button">COPY PACKAGE</button>
-                <button id="clearCorrectionDrafts" class="danger-button wide" type="button">
-                  CLEAR DRAFTS
+              <div id="releaseUpdateFileSummary" class="release-update-file-summary">
+                <b>NO PACKAGE SELECTED</b><span>Select a version 1 release-update JSON file to begin.</span>
+              </div>
+              <div class="release-update-actions">
+                <button id="previewReleaseUpdates" class="slash-button wide" type="button" disabled>
+                  PREVIEW
+                </button>
+                <button id="clearReleaseUpdates" class="danger-button wide" type="button" disabled>
+                  CLEAR
                 </button>
               </div>
-            </div>
-            <div class="correction-review">
-              <div class="kicker">BEFORE / AFTER REVIEW</div>
-              <h3>REVIEW A PACKAGE</h3>
-              <p>
-                Paste a package to validate every field and compare it with the current catalog. Nothing is
-                written until you explicitly apply the validated package.
-              </p>
-              <label class="field-label"
-                >CORRECTION PACKAGE<textarea
-                  id="correctionImportCode"
-                  spellcheck="false"
-                  placeholder="Paste UAIC.…"
-                ></textarea>
-              </label>
-              <button id="previewCorrectionCode" class="slash-button wide" type="button">
-                VALIDATE + SHOW CHANGES
-              </button>
-              <div id="correctionReviewResult" class="correction-review-result">
-                <div class="empty-state">No correction package selected.</div>
+              <div class="release-update-history-head">
+                <span>LOCAL IMPORT HISTORY</span
+                ><button id="clearReleaseUpdateHistory" type="button">CLEAR HISTORY</button>
               </div>
-              <button id="applyReviewedCorrections" class="slash-button hot wide" type="button" disabled>
-                APPLY TO THIS INSTALLATION
+              <div id="releaseUpdateHistory" class="release-update-history"></div>
+            </div>
+            <div class="release-updates-review">
+              <div class="kicker">BEFORE / AFTER REVIEW</div>
+              <h3>PACKAGE PREVIEW</h3>
+              <p>
+                Select the valid changes you want to apply. Conflicts, invalid entries and no-ops cannot be
+                applied.
+              </p>
+              <div id="releaseUpdateSummary" class="release-update-summary"></div>
+              <div id="releaseUpdatePreview" class="release-update-preview">
+                <div class="empty-state">Select a package, then preview it before applying.</div>
+              </div>
+              <button id="applySelectedReleaseUpdates" class="slash-button hot wide" type="button" disabled>
+                APPLY SELECTED
               </button>
-              <div id="correctionImportResult" class="import-result"></div>
+              <div id="releaseUpdateResult" class="import-result"></div>
             </div>
           </section>
         </div>
       </section>
     </main>
+
+    <footer class="tmdb-attribution" aria-label="Data credits">
+      <div class="tmdb-attribution-copy">
+        <span>DATA CREDITS //</span>
+        <div>
+          <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+          <p class="rights-notice">
+            Artwork, titles and related media remain the property of their respective rightsholders. Optional
+            cover packs contain no video files and are not bundled with the source code.
+          </p>
+        </div>
+      </div>
+      <div class="data-credit-links">
+        <a
+          class="tmdb-attribution-mark"
+          href="https://www.themoviedb.org/"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Visit The Movie Database"
+        >
+          <img src="tmdb-logo.svg" alt="The Movie Database (TMDB)" />
+        </a>
+        <a
+          class="tvmaze-attribution-mark"
+          href="https://www.tvmaze.com/"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <span>DATA BY</span><b>TVMAZE</b>
+        </a>
+      </div>
+    </footer>
 
     <dialog id="detailDialog" class="detail-dialog" aria-label="Title details">
       <div id="dialogBody"></div>
@@ -551,7 +1378,39 @@
       </div>
     </dialog>
 
+    <dialog id="coverPackDialog" class="cover-pack-dialog" aria-labelledby="coverPackDialogTitle">
+      <section class="cover-pack-dialog-body">
+        <div class="kicker">OFFICIAL ARTWORK UPDATE</div>
+        <h2 id="coverPackDialogTitle">NEW COVERS ARE READY</h2>
+        <p class="cover-pack-intro">
+          A verified artwork update is ready for your library. It is optional: nothing downloads until you
+          choose Install.
+        </p>
+        <div class="cover-pack-facts" aria-label="Cover package details">
+          <span class="cover-pack-primary-fact"
+            ><b id="coverPackCount">—</b><small id="coverPackCountLabel">NEW COVERS</small></span
+          >
+          <span><b id="coverPackSize">—</b><small>DOWNLOAD SIZE</small></span>
+        </div>
+        <p class="cover-pack-status" id="coverPackStatus" aria-live="polite"></p>
+        <div class="cover-pack-progress" id="coverPackProgress" hidden aria-live="polite">
+          <div><span id="coverPackPhase">PREPARING</span><b id="coverPackPercent">0%</b></div>
+          <i><em id="coverPackProgressBar"></em></i>
+        </div>
+        <p class="cover-pack-package-id">Verified package <span id="coverPackVersion">—</span></p>
+        <div class="cover-pack-actions">
+          <button id="installCoverPackBtn" class="slash-button hot wide" type="button">
+            INSTALL NEW COVERS
+          </button>
+          <button id="coverPackLater" class="slash-button wide" type="button">NOT NOW</button>
+          <button id="coverPackOptOut" class="cover-pack-opt-out" type="button">
+            STOP OFFERING ARTWORK UPDATES
+          </button>
+        </div>
+      </section>
+    </dialog>
+
     <div class="toast" id="toast" popover="manual"></div>
-    <script type="module" src="app.js?v=2.3.2-mature-content-cards-1"></script>
+    <script type="module" src="app.js?v=editor-share-flow-1"></script>
   </body>
 </html>

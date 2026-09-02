@@ -24,10 +24,6 @@ UserList codes intentionally omit favorites, watch status, personal ratings, pri
 notes and the sender's display name. Imported codes are verified and validated before
 browser data is changed.
 
-Catalog correction packages are unsigned data proposals and never contain a write token.
-The catalog mutation endpoint accepts only same-origin trusted-local requests and requires
-an ephemeral capability token created at server startup. Native starts trust loopback only.
-The included Docker Compose file binds its published port to host loopback and explicitly
-trusts the Docker bridge so container users retain local catalog editing. Remote clients can
-validate and export packages but cannot write to that installation's catalog through the
-default configuration. Source updates additionally require a Git clone.
+Editor review links are data-only proposals and never contain a write token, private user
+data or Cloudflare credentials. Importing a review creates local drafts only; official source
+updates still require repository review and a local Git checkout.

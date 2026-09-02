@@ -6,6 +6,13 @@ data/covers/
 public/catalog.json
 public/assets/theme-frames/
 data/catalog-source.json.next
+data/catalog.sqlite
+data/local/
+data/cover-package-build/
+data/cover-package-output/
 .DS_Store
 Thumbs.db
 *.log
+.env
+.env.*
+!.env.example

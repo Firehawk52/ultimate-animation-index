@@ -1,22 +1,24 @@
 export const RATING_FORMATS = ['tier', 'ten', 'stars'];
+export const CATALOG_TIERS = ['F', 'E', 'D', 'C', 'C+', 'B', 'B+', 'A', 'A+', 'S'];
 
-const QUALITY_VALUES = {
-  B: 5,
-  'B+': 6,
-  A: 7,
-  'A+': 8,
-  S: 9,
-  'S+': 10,
+const TEN_TIER_VALUES = {
+  F: 1,
+  E: 2,
+  D: 3,
+  C: 4,
+  'C+': 5,
+  B: 6,
+  'B+': 7,
+  A: 8,
+  'A+': 9,
+  S: 10,
 };
 
-const QUALITY_TIERS = {
-  B: 'D',
-  'B+': 'C',
-  A: 'B',
-  'A+': 'A',
-  S: 'A+',
-  'S+': 'S',
-};
+// Older releases used six editorial bands. They remain readable until the
+// future catalog declares the ten-tier release contract.
+const LEGACY_TIER_VALUES = { B: 5, 'B+': 6, A: 7, 'A+': 8, S: 9, 'S+': 10 };
+const LEGACY_CATALOG_TIERS = { 'B-': 'B', 'A-': 'A', 'S+': 'S' };
+const CATALOG_TIER_DISPLAY_ORDER = [...CATALOG_TIERS].reverse();
 
 const PERSONAL_TIERS = [
   { tier: 'S', minimum: 10, value: 10 },
@@ -35,12 +37,33 @@ export function normalizeRatingFormat(value) {
   return RATING_FORMATS.includes(value) ? value : 'tier';
 }
 
+// S+ existed in early catalog exports. The public display contract is ten
+// steps and ends at S, so legacy S+ is shown and filtered as S.
+export function normalizeCatalogTier(tier) {
+  const value = String(tier || 'CUSTOM').toUpperCase();
+  return LEGACY_CATALOG_TIERS[value] || value;
+}
+
+// Kept as an alias for existing UI code and external integrations.
+export function normalizeCuratedTier(tier) {
+  return normalizeCatalogTier(tier);
+}
+
+export function compareCatalogTiers(a, b) {
+  const fallback = CATALOG_TIER_DISPLAY_ORDER.length;
+  const left = CATALOG_TIER_DISPLAY_ORDER.indexOf(normalizeCatalogTier(a));
+  const right = CATALOG_TIER_DISPLAY_ORDER.indexOf(normalizeCatalogTier(b));
+  return (left < 0 ? fallback : left) - (right < 0 ? fallback : right);
+}
+
 export function qualityRatingLabel(tier, format = 'tier', { suffix = false } = {}) {
-  const normalizedTier = String(tier || 'CUSTOM').toUpperCase();
-  if (!(normalizedTier in QUALITY_VALUES)) return normalizedTier;
+  const rawTier = String(tier || 'CUSTOM').toUpperCase();
+  const normalizedTier = normalizeCuratedTier(rawTier);
+  const value =
+    TEN_TIER_VALUES[normalizedTier] ?? LEGACY_TIER_VALUES[rawTier] ?? LEGACY_TIER_VALUES[normalizedTier];
+  if (!value) return normalizedTier;
   const normalizedFormat = normalizeRatingFormat(format);
-  if (normalizedFormat === 'tier') return QUALITY_TIERS[normalizedTier];
-  const value = QUALITY_VALUES[normalizedTier];
+  if (normalizedFormat === 'tier') return normalizedTier;
   if (normalizedFormat === 'stars') return starRatingLabel(value / 2);
   return suffix ? `${value}/10` : String(value);
 }
