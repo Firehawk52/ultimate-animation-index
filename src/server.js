@@ -66,6 +66,10 @@ const USERLIST_SCHEMA = 3;
 const EDITOR_REVIEW_PREFIX = 'UAIE.';
 const MAX_BODY = 1024 * 1024;
 const MAX_LOCAL_DATA_BODY = 10 * 1024 * 1024;
+// The browser asks for the currently visible slice as users select Load more.
+// Keep this comfortably above the complete local catalog; a 120-row cap made
+// the third Load more request indistinguishable from the second one.
+const MAX_CATALOG_PAGE_LIMIT = 25_000;
 const META_TTL = 1000 * 60 * 60 * 24 * 30;
 const SERIES_REFRESH_TTL = 1000 * 60 * 60 * 24;
 const COVER_PACK_MANIFEST_URL =
@@ -2278,7 +2282,7 @@ function catalogPage(search = {}, rawProgress = {}) {
   const progress = catalogPersonalProgress(rawProgress);
   const scope = ['master', 'mature', 'kids'].includes(search.scope) ? search.scope : 'master';
   const offset = Math.max(0, Math.min(Number.parseInt(search.offset, 10) || 0, 100_000));
-  const limit = Math.max(1, Math.min(Number.parseInt(search.limit, 10) || 60, 120));
+  const limit = Math.max(1, Math.min(Number.parseInt(search.limit, 10) || 60, MAX_CATALOG_PAGE_LIMIT));
   const allowedSort = new Set([
     'rank',
     'overall',

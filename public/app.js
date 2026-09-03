@@ -25,7 +25,7 @@ import {
 
 (async () => {
   'use strict';
-  const APP_VERSION = '3.0.1';
+  const APP_VERSION = '3.0.2';
   const PAGE_SIZE = 60;
   // The app no longer needs to download and parse the entire catalog before it
   // can become interactive. New servers provide an indexed first page plus
@@ -3686,7 +3686,7 @@ import {
         ).length;
         const label =
           group.steps.length > 1 ? `${group.title} · ${group.steps.length} episodes` : group.title;
-        return `<button type="button" class="franchise-route-overview-node ${handled === group.steps.length ? 'is-complete' : ''}" data-franchise-route-target="${esc(first.id)}" style="--route-index:${index}"><span>${String(index + 1).padStart(2, '0')}</span><b>${esc(label)}</b><small>${formatCount(handled)}/${formatCount(group.steps.length)}</small></button>`;
+        return `<button type="button" class="franchise-route-overview-node ${handled === group.steps.length ? 'is-complete' : ''}" data-franchise-route-target="${esc(first.id)}"><span>${String(index + 1).padStart(2, '0')}</span><b>${esc(label)}</b><small>${formatCount(handled)}/${formatCount(group.steps.length)}</small></button>`;
       })
       .join('<i class="franchise-route-overview-link" aria-hidden="true"></i>')}</nav>`;
   }
@@ -6305,7 +6305,7 @@ import {
             return `<details class="source-item"><summary><div><b>${esc(s.label)}</b><span>${formatCount(rec)} recommended · ${formatCount(no)} not recommended · ${formatCount(completed.size)} fully watched · ${formatCount((s.titleIds || []).length)} added title${(s.titleIds || []).length === 1 ? '' : 's'}</span></div><span>IMPORTED ${esc((s.importedAt || '').slice(0, 10))}</span></summary><ul class="share-review-titles">${titles}</ul><div class="source-item-actions">${s.package ? `<button data-apply-source="${esc(sid)}" type="button">ADD TO CATALOG</button>` : '<small>Re-import this shared link to add it to the catalog.</small>'}<button data-remove-source="${esc(sid)}" type="button">REMOVE</button></div></details>`;
           })
           .join('')
-      : '<div class="empty-state" style="padding:24px">No imported UserLists yet.</div>';
+      : '<div class="empty-state source-list-empty">No imported UserLists yet.</div>';
     $$('[data-remove-source]', $('#sourceList')).forEach((b) =>
       b.addEventListener('click', () => removeSource(b.dataset.removeSource)),
     );

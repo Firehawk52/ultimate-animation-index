@@ -4,6 +4,15 @@ All notable changes to Ultimate Animation Index are documented here.
 
 ## Unreleased
 
+## [3.0.2] - 2026-09-04
+
+### Fixed
+
+- Restored **Load more** beyond 120 titles. The local indexed catalog now honours
+  the growing visible-page request instead of repeatedly returning the same capped slice.
+- Removed remaining inline style attributes from dynamic UserLists and franchise markup,
+  preventing browser Content Security Policy violations while keeping the strict CSP active.
+
 ## [3.0.1] - 2026-09-03
 
 ### Fixed

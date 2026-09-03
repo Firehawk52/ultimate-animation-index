@@ -4110,6 +4110,9 @@ body:after {
   gap: 7px;
   margin-top: 18px;
 }
+.source-list-empty {
+  padding: 24px;
+}
 .source-item summary {
   cursor: pointer;
 }
