@@ -979,6 +979,14 @@ function validCoverPackManifest(value) {
   if (!Number.isSafeInteger(archive?.bytes) || archive.bytes < 1 || archive.bytes > MAX_COVER_PACK_BYTES)
     return null;
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(rootDirectory)) return null;
+  const itemIds = Array.isArray(archive?.itemIds) ? archive.itemIds.map((id) => String(id)) : null;
+  if (
+    itemIds &&
+    (itemIds.length !== new Set(itemIds).size ||
+      itemIds.length !== archive.coverCount ||
+      itemIds.some((id) => !id || id.length > 180 || /[\u0000-\u001f]/.test(id)))
+  )
+    return null;
   const catalog = value.catalog && typeof value.catalog === 'object' ? value.catalog : null;
   const catalogPath = String(catalog?.path || '').replace(/\\/g, '/');
   const catalogSha256 = String(catalog?.sha256 || '').toLowerCase();
@@ -1012,6 +1020,7 @@ function validCoverPackManifest(value) {
       bytes: archive.bytes,
       rootDirectory,
       coverCount: Number.isSafeInteger(archive.coverCount) ? archive.coverCount : 0,
+      itemIds,
     },
   };
 }
@@ -1037,9 +1046,15 @@ async function getRemoteCoverPack({ force = false } = {}) {
   }
   return coverPackRemote;
 }
-function coverPackStatus(remote = coverPackRemote) {
+function coverPackStatus(remote = coverPackRemote, { newCoverCount: installedNewCoverCount } = {}) {
   const installed = validCoverPackManifest(coverPackState?.manifest);
   const available = remote.manifest || null;
+  const installedCoverIds = new Set(Object.keys(coverPackIndex.items || {}));
+  const newCoverCount = Number.isSafeInteger(installedNewCoverCount)
+    ? installedNewCoverCount
+    : Array.isArray(available?.archive.itemIds)
+      ? available.archive.itemIds.filter((itemId) => !installedCoverIds.has(itemId)).length
+      : null;
   return {
     installed: installed && {
       version: installed.version,
@@ -1052,7 +1067,7 @@ function coverPackStatus(remote = coverPackRemote) {
       sha256: available.archive.sha256,
       bytes: available.archive.bytes,
       coverCount: available.archive.coverCount,
-      newCoverCount: available.packageMode === 'REVIEWED_ONLY' ? available.archive.coverCount : 0,
+      newCoverCount: available.packageMode === 'REVIEWED_ONLY' ? newCoverCount : null,
       packageMode: available.packageMode,
     },
     updateAvailable: Boolean(available && installed?.archive.sha256 !== available.archive.sha256),
@@ -1221,6 +1236,8 @@ async function installCoverPack(report = () => {}) {
       if (!poster || !existsSync(join(root, poster)) || (backdrop && !existsSync(join(root, backdrop))))
         throw new Error('cover-pack-file-missing');
     }
+    const installedCoverIds = new Set(Object.keys(coverPackIndex.items || {}));
+    const newCoverCount = Object.keys(index.items).filter((itemId) => !installedCoverIds.has(itemId)).length;
     report({ phase: 'INSTALLING', percent: 84, message: 'Installing the verified cover package…' });
     backup = join(DATA_DIR, `.covers-backup-${randomBytes(8).toString('hex')}`);
     await rename(COVER_DIR, backup);
@@ -1238,7 +1255,7 @@ async function installCoverPack(report = () => {}) {
     loadCoverPackIndex();
     await rm(backup, { recursive: true, force: true });
     backup = '';
-    return coverPackStatus(remote);
+    return coverPackStatus(remote, { newCoverCount });
   } finally {
     if (backup && existsSync(backup) && !existsSync(COVER_DIR))
       await rename(backup, COVER_DIR).catch(() => {});

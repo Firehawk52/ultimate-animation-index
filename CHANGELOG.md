@@ -4,6 +4,19 @@ All notable changes to Ultimate Animation Index are documented here.
 
 ## Unreleased
 
+## [3.0.1] - 2026-09-03
+
+### Fixed
+
+- Cover-package update notices now count only artwork records that are not already
+  installed, rather than presenting every record in a reviewed package as new.
+- Older package manifests without an item list no longer display an inaccurate new-cover
+  count; the exact difference is calculated while the verified archive is installed.
+- Removed _123 Number Squad!_ (2023) and retained contiguous public ranks after the
+  latest catalog removals.
+- Ignored interrupted local cover-package staging and backup folders so they cannot be
+  mistaken for release files.
+
 ## [3.0.0] - 2026-09-03
 
 Version 3.0.0 is a major local-first rebuild of Ultimate Animation Index. It moves the

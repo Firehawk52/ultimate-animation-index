@@ -527,6 +527,7 @@ async function main() {
         bytes: archiveStat.size,
         rootDirectory: PACKAGE_ROOT,
         coverCount: Object.keys(index.items).length,
+        itemIds: Object.keys(index.items).sort(),
       },
     };
     await writeJson(resolve(OUTPUT_PATH, 'cover-pack.json'), manifest);

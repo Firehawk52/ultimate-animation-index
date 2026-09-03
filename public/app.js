@@ -25,7 +25,7 @@ import {
 
 (async () => {
   'use strict';
-  const APP_VERSION = '3.0.0';
+  const APP_VERSION = '3.0.1';
   const PAGE_SIZE = 60;
   // The app no longer needs to download and parse the entire catalog before it
   // can become interactive. New servers provide an indexed first page plus
@@ -4281,18 +4281,24 @@ import {
     const packageId = String(availableCoverPack.version || '').replace(/^manager-/, '');
     $('#coverPackVersion').textContent = packageId ? `#${packageId.slice(0, 8)}` : 'new';
     const reviewedOnly = availableCoverPack.packageMode === 'REVIEWED_ONLY';
+    const newCoverCountKnown = Number.isSafeInteger(availableCoverPack.newCoverCount);
     $('#coverPackCount').textContent = formatCount(
-      reviewedOnly
-        ? availableCoverPack.newCoverCount || availableCoverPack.coverCount || 0
+      reviewedOnly && newCoverCountKnown
+        ? availableCoverPack.newCoverCount
         : availableCoverPack.coverCount || 0,
     );
-    $('#coverPackCountLabel').textContent = reviewedOnly ? 'NEW COVERS' : 'COVERS';
+    $('#coverPackCountLabel').textContent =
+      reviewedOnly && newCoverCountKnown ? 'NEW COVERS' : 'COVERS IN PACKAGE';
     $('#coverPackSize').textContent = formatCoverPackBytes(availableCoverPack.bytes);
     $('#coverPackDialogTitle').textContent = reviewedOnly
-      ? `${formatCount(availableCoverPack.newCoverCount || availableCoverPack.coverCount || 0)} NEW COVERS ARE READY`
+      ? newCoverCountKnown
+        ? `${formatCount(availableCoverPack.newCoverCount)} NEW COVERS ARE READY`
+        : 'A REVIEWED COVER UPDATE IS READY'
       : 'A COVER UPDATE IS READY';
     $('#coverPackStatus').textContent = reviewedOnly
-      ? 'Installing replaces your previous cover package only after the download, checksum and file checks pass. Your library catalog is updated from the matching official snapshot.'
+      ? newCoverCountKnown
+        ? `This package adds ${formatCount(availableCoverPack.newCoverCount)} cover records that are not already installed. It replaces your previous cover package only after download, checksum and file checks pass.`
+        : 'This package does not include a title list, so its exact number of new covers will be calculated during installation. It replaces your previous cover package only after download, checksum and file checks pass.'
       : 'The archive is verified before installation. Your current cover package is replaced only after every file check passes.';
     if (!dialog.open) dialog.showModal();
   }
@@ -4348,7 +4354,9 @@ import {
         updateProgress({
           phase: 'COMPLETE',
           percent: 100,
-          message: 'Installed. Refreshing your new covers…',
+          message: Number.isSafeInteger(job.detail?.result?.available?.newCoverCount)
+            ? `Installed. ${formatCount(job.detail.result.available.newCoverCount)} new covers added — refreshing…`
+            : 'Installed. Refreshing your covers…',
         });
         setTimeout(() => location.reload(), 450);
       };
