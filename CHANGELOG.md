@@ -4,6 +4,18 @@ All notable changes to Ultimate Animation Index are documented here.
 
 ## Unreleased
 
+## [3.0.3] - 2026-09-05
+
+### Changed
+
+- Rebuilt the title-detail hero around the supplied wide backdrop artwork. Backdrops now
+  take visual priority over portrait covers, with a taller cinematic presentation,
+  readable title treatment and responsive framing on smaller screens.
+- Refined hero artwork contrast, saturation and overlays so supplied backdrop art remains
+  visible and legible rather than being obscured by the interface treatment.
+- Refreshed the curated catalog snapshot, retiring 13 invalid or superseded entries and
+  recalculating the affected catalog records and ranks.
+
 ## [3.0.2] - 2026-09-04
 
 ### Fixed
