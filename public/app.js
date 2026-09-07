@@ -15,6 +15,7 @@ import {
   sortedAwardEntries,
 } from './award-format.js';
 import { providerSeriesLabels } from './series-labels.js';
+import { metadataMatchesTitle } from './metadata-identity.js';
 import { REGIONS, countriesFor, titleMatchesCountry, titleMatchesRegion } from './geography.js';
 import {
   createInterfaceI18n,
@@ -346,8 +347,8 @@ import {
     franchiseRoutes:
       savedUI.franchiseRoutes && typeof savedUI.franchiseRoutes === 'object'
         ? Object.fromEntries(
-            Object.entries(savedUI.franchiseRoutes).filter(
-              ([, route]) => route === 'story' || route === 'recommended',
+            Object.entries(savedUI.franchiseRoutes).filter(([, route]) =>
+              ['story', 'recommended', 'alternate'].includes(route),
             ),
           )
         : {},
@@ -843,15 +844,15 @@ import {
     if (!item?.id || state.coverArtworkMode === 'never') return '';
     const cover =
       installedArtwork[item.id]?.cover ||
-      meta[item.id]?.data?.cover ||
-      meta[item.id]?.data?.image ||
+      verifiedMetadata(item)?.cover ||
+      verifiedMetadata(item)?.image ||
       item.cover ||
       '';
     return String(cover).startsWith('/covers/') ? cover : '';
   }
   function localBackdropFor(item) {
     if (!item?.id || state.coverArtworkMode === 'never') return '';
-    const backdrop = installedArtwork[item.id]?.banner || meta[item.id]?.data?.banner || '';
+    const backdrop = installedArtwork[item.id]?.banner || verifiedMetadata(item)?.banner || '';
     return String(backdrop).startsWith('/covers/') ? backdrop : '';
   }
   function localArtworkForTitle(title) {
@@ -932,13 +933,17 @@ import {
       .toUpperCase();
   }
   function displayType(x) {
-    return x.type || meta[x.id]?.data?.format || 'Animation';
+    return x.type || verifiedMetadata(x)?.format || 'Animation';
   }
   function liveYear(x) {
-    return meta[x.id]?.data?.year || x.year || '—';
+    return x.year || verifiedMetadata(x)?.year || '—';
+  }
+  function verifiedMetadata(item) {
+    const data = meta[item?.id]?.data;
+    return metadataMatchesTitle(item, data) ? data : undefined;
   }
   function liveGenres(x) {
-    const g = meta[x.id]?.data?.genres;
+    const g = verifiedMetadata(x)?.genres;
     return Array.isArray(g) && g.length
       ? g
       : Array.isArray(x.genres)
@@ -962,7 +967,7 @@ import {
 
   function titleMatchesSearch(item, query) {
     if (!query) return true;
-    const providerText = norm(meta[item.id]?.data?.studio || '');
+    const providerText = norm(verifiedMetadata(item)?.studio || '');
     const indexed =
       titleSearchIndex.get(item.id) ||
       norm(
@@ -1538,8 +1543,8 @@ import {
         state.franchiseRoute = settings.franchiseRoute;
       if (settings.franchiseRoutes && typeof settings.franchiseRoutes === 'object')
         state.franchiseRoutes = Object.fromEntries(
-          Object.entries(settings.franchiseRoutes).filter(
-            ([, route]) => route === 'story' || route === 'recommended',
+          Object.entries(settings.franchiseRoutes).filter(([, route]) =>
+            ['story', 'recommended', 'alternate'].includes(route),
           ),
         );
       if (typeof settings.franchiseFocusStep === 'string')
@@ -1813,7 +1818,7 @@ import {
   }
 
   function cardHTML(x, { adult = false } = {}) {
-    const m = meta[x.id]?.data || {},
+    const m = verifiedMetadata(x) || {},
       p = pFor(x.id),
       verdict = ownVerdict(x.id),
       cover = localArtworkFor(x);
@@ -2281,7 +2286,7 @@ import {
 
   function isFeatureFilm(x) {
     const type = String(x?.type || '').toLowerCase();
-    const format = String(x?.format || meta[x?.id]?.data?.format || '').toLowerCase();
+    const format = String(x?.format || verifiedMetadata(x)?.format || '').toLowerCase();
     return (
       (/\b(film|movie)\b/.test(type) || /\b(feature film|film|movie)\b/.test(format)) &&
       !/\bseries\b/.test(type)
@@ -2291,7 +2296,7 @@ import {
   function canTrackEpisodes(x) {
     if (isFeatureFilm(x)) return false;
     if (!x || !['anilist', 'tvmaze'].includes(x.api)) return false;
-    return /series|tv|ova|ona|special/i.test(`${x.type || ''} ${meta[x.id]?.data?.format || ''}`);
+    return /series|tv|ova|ona|special/i.test(`${x.type || ''} ${verifiedMetadata(x)?.format || ''}`);
   }
 
   function hasWatchTracker(x) {
@@ -2452,7 +2457,7 @@ import {
   }
 
   function featureFilmGroup(x) {
-    const m = meta[x.id]?.data || {};
+    const m = verifiedMetadata(x) || {};
     return {
       source: 'catalog',
       rootId: x.id,
@@ -3473,7 +3478,9 @@ import {
 
   function franchiseOrderKind(order = {}) {
     const text = `${order.label || ''} ${order.mode || ''}`.toLowerCase();
-    return /story|chronolog/.test(text) ? 'story' : 'recommended';
+    if (/story|chronolog/.test(text)) return 'story';
+    if (/alternate|live.action/.test(text)) return 'alternate';
+    return 'recommended';
   }
 
   function franchiseStepAnchorMatches(step, anchor) {
@@ -3581,6 +3588,7 @@ import {
   function canonicalFranchiseGuide(franchise) {
     const recommended = franchiseRouteSteps(franchise, 'recommended');
     const story = franchiseRouteSteps(franchise, 'story');
+    const alternate = franchiseRouteSteps(franchise, 'alternate');
     const byId = new Map();
     const addRoute = (steps, routeName) => {
       steps.forEach((raw, index) => {
@@ -3591,12 +3599,19 @@ import {
           recommendedPosition: null,
           storyChronologicalPosition: null,
         };
-        existing[routeName === 'story' ? 'storyChronologicalPosition' : 'recommendedPosition'] = index + 1;
+        const position =
+          routeName === 'story'
+            ? 'storyChronologicalPosition'
+            : routeName === 'alternate'
+              ? 'alternatePosition'
+              : 'recommendedPosition';
+        existing[position] = index + 1;
         byId.set(id, existing);
       });
     };
     addRoute(recommended, 'recommended');
     addRoute(story, 'story');
+    addRoute(alternate, 'alternate');
     return [...byId.values()];
   }
 
@@ -3655,7 +3670,9 @@ import {
   }
 
   function franchiseGuideProgress(franchise, steps = franchiseGuideSteps(franchise)) {
-    const applicable = steps.filter((step) => step.recommendedPosition || step.storyChronologicalPosition);
+    const applicable = steps.filter(
+      (step) => step.recommendedPosition || step.storyChronologicalPosition || step.alternatePosition,
+    );
     const essential = applicable.filter((step) => String(step.flag || '').toUpperCase() === 'ESSENTIAL');
     const summary = (rows) => ({
       handled: rows.filter((step) => isHandledWatchStatus(guideStepStatus(franchise, step))).length,
@@ -3711,7 +3728,11 @@ import {
 
   function franchiseRouteStepHTML(franchise, step, activeRoute) {
     const activePosition =
-      activeRoute === 'story' ? step.storyChronologicalPosition : step.recommendedPosition;
+      activeRoute === 'story'
+        ? step.storyChronologicalPosition
+        : activeRoute === 'alternate'
+          ? step.alternatePosition
+          : step.recommendedPosition;
     const item = step.itemId ? itemById(step.itemId) : franchiseStepItem(step);
     const status = guideStepStatus(franchise, step);
     const positions = [
@@ -3721,6 +3742,7 @@ import {
       step.storyChronologicalPosition && step.storyChronologicalPosition !== step.recommendedPosition
         ? `<small>STORY ${step.storyChronologicalPosition}</small>`
         : '',
+      step.alternatePosition ? `<small>ALT ${step.alternatePosition}</small>` : '',
     ].join('');
     const range = step.episode ? `Episode ${step.episode}` : step.episodeRange || step.timeRange || '';
     const note = [step.transition && `THEN ${step.transition}`, step.note, step.resumeNote]
@@ -3732,7 +3754,11 @@ import {
 
   function franchiseRouteEpisodeHTML(franchise, step, activeRoute) {
     const activePosition =
-      activeRoute === 'story' ? step.storyChronologicalPosition : step.recommendedPosition;
+      activeRoute === 'story'
+        ? step.storyChronologicalPosition
+        : activeRoute === 'alternate'
+          ? step.alternatePosition
+          : step.recommendedPosition;
     if (!activePosition) return '';
     const item = step.itemId ? itemById(step.itemId) : franchiseStepItem(step);
     const status = guideStepStatus(franchise, step);
@@ -3776,7 +3802,7 @@ import {
     const format = String(
       item?.format ||
         item?.type ||
-        meta[item?.id]?.data?.format ||
+        verifiedMetadata(item)?.format ||
         first.format ||
         first.type ||
         first.kind ||
@@ -3824,20 +3850,22 @@ import {
   }
 
   function orderedFranchiseRouteSteps(steps, route) {
-    const position = route === 'story' ? 'storyChronologicalPosition' : 'recommendedPosition';
+    const position =
+      route === 'story'
+        ? 'storyChronologicalPosition'
+        : route === 'alternate'
+          ? 'alternatePosition'
+          : 'recommendedPosition';
     return steps.filter((step) => step[position]).sort((a, b) => a[position] - b[position]);
   }
 
   function selectedFranchiseRoute(franchiseId) {
-    return state.franchiseRoutes?.[franchiseId] === 'story'
-      ? 'story'
-      : state.franchiseRoutes?.[franchiseId] === 'recommended'
-        ? 'recommended'
-        : state.franchiseRoute;
+    const selected = state.franchiseRoutes?.[franchiseId];
+    return ['story', 'recommended', 'alternate'].includes(selected) ? selected : state.franchiseRoute;
   }
 
   function rememberFranchiseRoute(franchiseId, route) {
-    if (!franchiseId || (route !== 'story' && route !== 'recommended')) return;
+    if (!franchiseId || !['story', 'recommended', 'alternate'].includes(route)) return;
     state.franchiseRoutes = { ...(state.franchiseRoutes || {}), [franchiseId]: route };
     state.franchiseRoute = route;
     saveUIState();
@@ -3869,6 +3897,13 @@ import {
     const activeRoute = selectedFranchiseRoute(franchise.id);
     const recommended = orderedFranchiseRouteSteps(steps, 'recommended');
     const story = orderedFranchiseRouteSteps(steps, 'story');
+    const alternate = orderedFranchiseRouteSteps(steps, 'alternate');
+    const alternateOrder = (franchise.orders || []).find(
+      (order) => !isFranchisePlacementOrder(order) && franchiseOrderKind(order) === 'alternate',
+    );
+    if (alternate.length) {
+      return `<section class="franchise-flow-fork franchise-flow-alternate"><header><span>SEPARATE CONTINUITIES</span><b>CHOOSE A VIEWING PATH</b></header><div class="franchise-flow-branches"><div class="franchise-flow-branch ${activeRoute === 'recommended' ? 'is-active' : ''}"><button type="button" data-franchise-flow-route="recommended"><span>↙</span> ANIMATED CONTINUITY</button><div>${franchiseRouteBlockHTML(franchise, recommended, 'recommended') || '<p>No animated route is available.</p>'}</div></div><div class="franchise-flow-branch ${activeRoute === 'alternate' ? 'is-active' : ''}"><button type="button" data-franchise-flow-route="alternate"><span>↘</span> ${esc(alternateOrder?.label || 'ALTERNATE ROUTE').toUpperCase()}</button><div>${franchiseRouteBlockHTML(franchise, alternate, 'alternate') || '<p>No alternate route is available.</p>'}</div></div></div></section>`;
+    }
     const hasExplicitStoryRoute = (franchise.orders || []).some(
       (order) => !isFranchisePlacementOrder(order) && franchiseOrderKind(order) === 'story',
     );
@@ -4039,7 +4074,9 @@ import {
         const guide = control.closest('details.franchise[data-franchise-id]');
         rememberFranchiseRoute(
           guide?.dataset.franchiseId || '',
-          control.dataset.franchiseFlowRoute === 'story' ? 'story' : 'recommended',
+          ['story', 'alternate'].includes(control.dataset.franchiseFlowRoute)
+            ? control.dataset.franchiseFlowRoute
+            : 'recommended',
         );
         renderUnifiedFranchises();
         return;
@@ -5238,7 +5275,7 @@ import {
 
   function editorValuesFor(item) {
     const draft = editorDrafts[item?.id]?.values || {};
-    const metadata = meta[item?.id]?.data || {};
+    const metadata = verifiedMetadata(item) || {};
     const linkedFranchise =
       item &&
       CAT.franchises.find((franchise) =>
@@ -6968,7 +7005,7 @@ import {
 
   async function refreshCustomMetadata(x, { force = false, silent = false } = {}) {
     if (!x?.custom) return false;
-    if (!force && metaFresh(x.id) && metadataCompleteness(meta[x.id]?.data) >= 6) return true;
+    if (!force && metaFresh(x.id) && metadataCompleteness(verifiedMetadata(x)) >= 6) return true;
     const match = await findCustomMetadata(x.lookupTitle || x.title, x.type, x.origin, x.year);
     if (!match) {
       if (!silent) toast('No reliable metadata match found');
@@ -6983,7 +7020,7 @@ import {
   async function hydrateMissingCustomMetadata() {
     for (const x of customTitles) {
       if (!state.server) return;
-      if (!metaFresh(x.id) || metadataCompleteness(meta[x.id]?.data) < 6)
+      if (!metaFresh(x.id) || metadataCompleteness(verifiedMetadata(x)) < 6)
         await refreshCustomMetadata(x, { silent: true });
     }
   }
@@ -7805,7 +7842,28 @@ import {
         : 'Choose a private letter rating from F to S. The 10 equal steps are F, E, D, C, C+, B, B+, A, A+ and S.';
   }
 
+  let detailIdFeedbackTimer;
+  $('#copyDetailId').addEventListener('click', async () => {
+    const id = $('#detailTitleId').textContent;
+    if (!id) return;
+    try {
+      await navigator.clipboard.writeText(id);
+      if ($('#detailTitleId').textContent !== id) return;
+      $('#detailIdCopyLabel').textContent = 'Copied';
+      clearTimeout(detailIdFeedbackTimer);
+      detailIdFeedbackTimer = setTimeout(() => {
+        $('#detailIdCopyLabel').textContent = 'Copy ID';
+      }, 1800);
+    } catch {
+      toast('Could not copy the title ID. Select the ID and copy it manually.');
+    }
+  });
+
   function openDetail(id) {
+    clearTimeout(detailIdFeedbackTimer);
+    $('#detailTitleId').textContent = id;
+    $('#detailIdCopyLabel').textContent = 'Copy ID';
+    $('#copyDetailId').setAttribute('aria-label', `Copy title ID: ${id}`);
     const x = itemById(id);
     if (!x || x.catalogSummary) {
       // Cards deliberately carry a compact record.  Open a lightweight detail
@@ -7830,7 +7888,7 @@ import {
       return;
     }
     $('#detailDialog').classList.toggle('kids-detail', isForKids(x));
-    const rawMeta = meta[id]?.data || {},
+    const rawMeta = verifiedMetadata(x) || {},
       // A local editor summary intentionally takes precedence over provider text.
       // Provider metadata remains the fallback for catalog records without a local summary.
       m = {
@@ -8101,7 +8159,7 @@ import {
 
   function metaFresh(id) {
     const cur = meta[id];
-    if (!cur?.data || Date.now() - cur.ts >= META_TTL) return false;
+    if (!metadataMatchesTitle(itemById(id), cur?.data) || Date.now() - cur.ts >= META_TTL) return false;
     return Boolean(cur.data.cover) || Date.now() - cur.ts < MISSING_COVER_RETRY_TTL;
   }
 
@@ -8200,7 +8258,7 @@ import {
           const j = await r.json();
           if (r.ok && j.ok) {
             for (const row of j.results || []) {
-              if (row?.data && itemById(row.key)) {
+              if (metadataMatchesTitle(itemById(row.key), row?.data)) {
                 meta[row.key] = { ts: Date.now(), data: row.data };
               }
             }

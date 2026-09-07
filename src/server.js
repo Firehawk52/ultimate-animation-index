@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, watch } from 'node:fs';
 import { readFile, writeFile, mkdir, rm, stat, rename } from 'node:fs/promises';
 import {
   copyFileSync,
@@ -28,6 +28,7 @@ import {
 } from 'node:crypto';
 import { buildCatalog, validateCatalog } from '../scripts/build-catalog.js';
 import { applyReleaseUpdatePackage, previewReleaseUpdatePackage } from '../scripts/release-updates.js';
+import { matchingAnimatedShow } from '../public/metadata-identity.js';
 
 // Runtime paths and resource limits
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -96,6 +97,9 @@ const UPDATE_TOKEN = randomBytes(24).toString('base64url');
 let updateRunning = false;
 let catalogDatabase = null;
 let catalogTotal = 0;
+let catalogSourceWatcher = null;
+let catalogSourceRefreshTimer = null;
+let catalogSourceRefreshRunning = false;
 
 mkdirSync(PRIVATE, { recursive: true });
 mkdirSync(CACHE_DIR, { recursive: true });
@@ -401,6 +405,44 @@ async function writeOfficialCatalog(catalog) {
   }
   buildCatalog();
   catalogTotal = Number(catalogMeta('title_count', '0')) || 0;
+}
+
+async function refreshCatalogAfterExternalWrite() {
+  if (catalogSourceRefreshRunning) return;
+  catalogSourceRefreshRunning = true;
+  try {
+    const source = await readCatalogSourceWithHash();
+    if (source.sourceHash === catalogMeta('source_hash')) return;
+    if (catalogDatabase) {
+      catalogDatabase.close();
+      catalogDatabase = null;
+    }
+    buildCatalog();
+    catalogTotal = Number(catalogMeta('title_count', '0')) || 0;
+    console.log(`Reloaded catalog changed by Cover Manager (${catalogTotal.toLocaleString()} titles).`);
+  } catch (error) {
+    // An atomic write can briefly expose an incomplete file notification. The
+    // next notification or request retries; the existing SQLite catalog stays live.
+    console.error(`Could not reload externally changed catalog: ${error.message}`);
+  } finally {
+    catalogSourceRefreshRunning = false;
+  }
+}
+
+function watchCatalogSource() {
+  if (catalogSourceWatcher) return;
+  try {
+    catalogSourceWatcher = watch(dirname(CATALOG_SOURCE), { persistent: false }, (_event, file) => {
+      if (String(file || '') !== 'catalog-source.json') return;
+      clearTimeout(catalogSourceRefreshTimer);
+      catalogSourceRefreshTimer = setTimeout(() => void refreshCatalogAfterExternalWrite(), 180);
+    });
+    catalogSourceWatcher.on('error', (error) =>
+      console.error(`Catalog change watcher stopped: ${error.message}`),
+    );
+  } catch (error) {
+    console.error(`Could not watch catalog changes: ${error.message}`);
+  }
 }
 
 async function previewOfficialEditorReview(code) {
@@ -1175,8 +1217,11 @@ async function fetchCatalogForCoverPack(manifest = null) {
   return catalog;
 }
 async function syncCatalogFromCoverStorage({ force = false } = {}) {
-  if (!force && catalogUpdateState.result && Date.now() - catalogUpdateState.checkedAt < CATALOG_UPDATE_TTL)
-    return catalogUpdateState.result;
+  if (!force && catalogUpdateState.result && Date.now() - catalogUpdateState.checkedAt < CATALOG_UPDATE_TTL) {
+    // A previous caller may have reloaded after applying an update. Never let
+    // its cached `changed: true` cause every new page load to reload again.
+    return { ...catalogUpdateState.result, changed: false, cached: true };
+  }
   const remote = await fetchCatalogForCoverPack();
   const result = { ...(await mergeRemoteCatalog(remote)), checkedAt: new Date().toISOString() };
   catalogUpdateState = { checkedAt: Date.now(), result };
@@ -1983,6 +2028,24 @@ async function metaTVMaze(title) {
   const m = await r.json();
   return metadataFromTVMazeShow(m, title);
 }
+async function metadataForCatalogTVMaze(item) {
+  const title = item.lookupTitle || item.title;
+  const key = `identity-v1:${JSON.stringify([item.id, item.title, item.lookupTitle, item.aliases, item.year, item.externalId])}`;
+  const cached = cacheGet('tvmaze', key);
+  if (cached) return cached;
+  const url = item.externalId
+    ? `https://api.tvmaze.com/shows/${encodeURIComponent(item.externalId)}`
+    : `https://api.tvmaze.com/search/shows?q=${encodeURIComponent(title)}`;
+  const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
+  if (!response.ok) throw new Error(`tvmaze-${response.status}`);
+  const value = await response.json();
+  const candidates = (item.externalId ? [value] : value.map((row) => row.show)).filter((show) =>
+    matchingAnimatedShow(item, show),
+  );
+  if (candidates.length !== 1) throw new Error('metadata-identity-unconfirmed');
+  const data = await localizeMetadataArtwork(await metadataFromTVMazeShow(candidates[0], title));
+  return cachePut('tvmaze', key, data);
+}
 async function metaTVMazeById(id, title) {
   const r = await fetch(`https://api.tvmaze.com/shows/${encodeURIComponent(id)}`, {
     headers: { Accept: 'application/json' },
@@ -1995,6 +2058,7 @@ async function metadataFromTVMazeShow(m, title) {
   let data = {
     source: 'tvmaze',
     externalId: String(m.id),
+    mediaType: m.type || '',
     canonicalTitle: m.name || title,
     cover: m.image?.original || m.image?.medium || '',
     banner: '',
@@ -2121,6 +2185,20 @@ async function mapWithConcurrency(values, limit, worker) {
 }
 async function getMetadataBatch(items) {
   const results = [];
+  const catalogTVMaze = items.filter((item) => item.kind === 'tvmaze');
+  results.push(
+    ...(await mapWithConcurrency(catalogTVMaze, 4, async (it) => {
+      try {
+        const row = openCatalogDatabase().prepare('SELECT data_json FROM titles WHERE id = ?').get(it.key);
+        if (!row) throw new Error('metadata-identity-unconfirmed');
+        const data = await metadataForCatalogTVMaze(JSON.parse(row.data_json));
+        return { key: it.key, data: withPackageArtwork(data, it.key) };
+      } catch (error) {
+        return { key: it.key, error: error.message };
+      }
+    })),
+  );
+  items = items.filter((item) => item.kind !== 'tvmaze');
   const misses = [];
   for (const it of items) {
     const cached = cacheGet(it.kind, it.title, it.externalId);
@@ -2940,6 +3018,12 @@ export const server = http.createServer(async (req, res) => {
 });
 // Exported separately so integration tests can bind to an ephemeral port.
 export function startServer(port = PORT, host = HOST) {
+  watchCatalogSource();
+  server.once('close', () => {
+    clearTimeout(catalogSourceRefreshTimer);
+    catalogSourceWatcher?.close();
+    catalogSourceWatcher = null;
+  });
   return server.listen(port, host, () => {
     const address = server.address();
     const activePort = typeof address === 'object' && address ? address.port : port;

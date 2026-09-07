@@ -4170,6 +4170,43 @@ body:after {
   color: var(--ink);
   box-shadow: 0 30px 90px #000a;
 }
+.detail-id-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 20px;
+  border-top: 1px solid #343c49;
+  background: #10141c;
+}
+.detail-id-copy {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: 500 12px/1.5 var(--body);
+  text-align: right;
+  cursor: pointer;
+}
+#detailTitleId {
+  color: var(--cyan);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.detail-id-copy:hover,
+.detail-id-copy:focus-visible {
+  border-color: var(--cyan);
+  color: var(--ink);
+  background: #1b2631;
+}
 .detail-dialog::backdrop,
 .collection-dialog::backdrop,
 .rating-format-dialog::backdrop {
