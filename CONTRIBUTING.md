@@ -4,7 +4,7 @@ Thanks for helping improve the Ultimate Animation Index.
 
 ## Before making a change
 
-1. Install Node.js 20.19+, 22.16+, or 24+.
+1. Install Node.js 22.16+ or 24+.
 2. Run `npm ci` once to install the exact development tools from the lockfile.
 3. Keep the change focused. Avoid committing local covers, metadata caches or
    UserList signing keys.

@@ -4,6 +4,26 @@ All notable changes to Ultimate Animation Index are documented here.
 
 ## Unreleased
 
+## [3.0.4] - 2026-09-07
+
+### Fixed
+
+- Prevented same-name live-action remakes from being accepted as metadata or artwork for
+  animated catalog titles. Provider candidates must now match the catalog identity, year
+  and animation type before their details, cover or backdrop can be used.
+- Added an explicit alternate route to the **Avatar** franchise guide, keeping Netflix's
+  2024 live-action reimagining separate from the animated continuity.
+- Kept the local SQLite catalog and Cover Manager aligned when the canonical catalog
+  changes, without repeatedly reloading the application after an already-applied update.
+
+### Changed
+
+- Refreshed the complete curated catalog snapshot, including corrected title identities,
+  franchise relationships and current ranks.
+- Updated the container base image to Node 26 Alpine. Continuous integration now tests
+  supported Node 22 and Node 24 releases; Node 20 is no longer advertised because the
+  indexed catalog requires Node's built-in SQLite module.
+
 ## [3.0.3] - 2026-09-05
 
 ### Changed

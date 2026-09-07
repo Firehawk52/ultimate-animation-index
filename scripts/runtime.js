@@ -1,12 +1,11 @@
 import { get } from 'node:http';
 
-export const SUPPORTED_NODE_RELEASES = '20.19+, 22.16+, or 24+';
+export const SUPPORTED_NODE_RELEASES = '22.16+ or 24+';
 
 export function assertSupportedNode(version = process.versions.node) {
   const [major, minor, patch] = String(version).split('.').slice(0, 3).map(Number);
   const supported =
-    [major, minor, patch].every(Number.isInteger) &&
-    ((major === 20 && minor >= 19) || (major === 22 && minor >= 16) || major >= 24);
+    [major, minor, patch].every(Number.isInteger) && ((major === 22 && minor >= 16) || major >= 24);
   if (!supported) {
     throw new Error(`Node.js ${SUPPORTED_NODE_RELEASES} is required. Detected: ${version || 'unknown'}.`);
   }

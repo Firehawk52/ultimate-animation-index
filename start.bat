@@ -4,7 +4,7 @@ cd /d "%~dp0"
 where node >nul 2>nul
 if errorlevel 1 (
   echo.
-  echo Ultimate Animation Index needs Node.js 20.19+, 22.16+, or 24+.
+  echo Ultimate Animation Index needs Node.js 22.16+ or 24+.
   echo Download and install Node.js, then double-click start.bat again.
   echo.
   pause

@@ -83,7 +83,7 @@ animation index.
 
 ## Quick start
 
-Install a [supported Node.js LTS release](https://nodejs.org/) (20.19+, 22.16+, or 24+), then run:
+Install a [supported Node.js LTS release](https://nodejs.org/) (22.16+ or 24+), then run:
 
 ```bash
 git clone https://github.com/Firehawk52/ultimate-animation-index.git
@@ -150,14 +150,14 @@ caches, signing keys and installed packages are intentionally excluded from Git.
 
 ### Windows
 
-1. Install Node.js 20.19+, 22.16+, or 24+.
+1. Install Node.js 22.16+ or 24+.
 2. Double-click `start.bat`.
 3. Your default browser opens automatically when the server is ready.
 4. Keep the terminal window open while you use the site.
 
 ### macOS
 
-1. Install Node.js 20.19+, 22.16+, or 24+.
+1. Install Node.js 22.16+ or 24+.
 2. Double-click `start.command`.
 3. Your default browser opens automatically when the server is ready.
 
@@ -185,7 +185,7 @@ npm start
 
 Requirements:
 
-- Node.js 20.19+, 22.16+, or 24+
+- Node.js 22.16+ or 24+
 
 Install the development formatter and run the project checks:
 

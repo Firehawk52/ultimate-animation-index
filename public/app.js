@@ -26,7 +26,7 @@ import {
 
 (async () => {
   'use strict';
-  const APP_VERSION = '3.0.3';
+  const APP_VERSION = '3.0.4';
   const PAGE_SIZE = 60;
   // The app no longer needs to download and parse the entire catalog before it
   // can become interactive. New servers provide an indexed first page plus
