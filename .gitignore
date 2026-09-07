@@ -4,7 +4,17 @@ node_modules/
 covers/
 data/covers/
 public/catalog.json
+public/assets/theme-frames/
 data/catalog-source.json.next
+data/catalog.sqlite
+data/local/
+data/cover-package-build/
+data/cover-package-output/
+data/.cover-pack-stage-*/
+data/.covers-backup-*/
 .DS_Store
 Thumbs.db
 *.log
+.env
+.env.*
+!.env.example

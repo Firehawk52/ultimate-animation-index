@@ -1,6 +1,8 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { readFile, writeFile, mkdir, stat, rename } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
+import { createWriteStream } from 'node:fs';
+import { readFile, writeFile, mkdir, rm, stat, rename } from 'node:fs/promises';
 import {
   copyFileSync,
   existsSync,
@@ -11,8 +13,10 @@ import {
   renameSync,
   statSync,
 } from 'node:fs';
-import { dirname, extname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
+import { dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { parsePort } from '../scripts/runtime.js';
 import {
   generateKeyPairSync,
@@ -23,27 +27,65 @@ import {
   createPublicKey,
 } from 'node:crypto';
 import { buildCatalog, validateCatalog } from '../scripts/build-catalog.js';
-import {
-  applyCorrectionPackage,
-  parseCorrectionCode,
-  validateCorrectionPackage,
-} from '../scripts/catalog-corrections.js';
+import { applyReleaseUpdatePackage, previewReleaseUpdatePackage } from '../scripts/release-updates.js';
 
 // Runtime paths and resource limits
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = dirname(__dirname);
+
+// Deliberately tiny local .env loader: only the local server reads it, values
+// already supplied by the operating system always take precedence.
+function loadLocalEnv(path) {
+  try {
+    for (const raw of readFileSync(path, 'utf8').split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+      if (!match || Object.hasOwn(process.env, match[1])) continue;
+      process.env[match[1]] = match[2].trim().replace(/^['"]|['"]$/g, '');
+    }
+  } catch {}
+}
+loadLocalEnv(join(ROOT, '.env'));
+
 const PUBLIC = join(ROOT, 'public');
 const PRIVATE = join(ROOT, '.userlist-keys');
 const CACHE_DIR = join(ROOT, '.cache');
 const DATA_DIR = join(ROOT, 'data');
+const LOCAL_DATA_DIR = join(DATA_DIR, 'local');
+const LOCAL_USER_DATA = join(LOCAL_DATA_DIR, 'user-data.json');
+const LOCAL_CACHE_DATA = join(LOCAL_DATA_DIR, 'cache.json');
+const COVER_SUBMISSION_DIR = join(DATA_DIR, 'cover-submissions');
+const LOCAL_COVER_OVERRIDES = join(LOCAL_DATA_DIR, 'cover-overrides.json');
 const LEGACY_COVER_DIR = join(ROOT, 'covers');
 const CATALOG_SOURCE = join(DATA_DIR, 'catalog-source.json');
+const CATALOG_DATABASE = join(DATA_DIR, 'catalog.sqlite');
 const PORT = parsePort(process.env.PORT);
 const HOST = process.env.UAI_HOST || '127.0.0.1';
 const USERLIST_SCHEMA = 3;
+const EDITOR_REVIEW_PREFIX = 'UAIE.';
 const MAX_BODY = 1024 * 1024;
+const MAX_LOCAL_DATA_BODY = 10 * 1024 * 1024;
+// The browser asks for the currently visible slice as users select Load more.
+// Keep this comfortably above the complete local catalog; a 120-row cap made
+// the third Load more request indistinguishable from the second one.
+const MAX_CATALOG_PAGE_LIMIT = 25_000;
 const META_TTL = 1000 * 60 * 60 * 24 * 30;
-const MAX_COVER_BYTES = 10 * 1024 * 1024;
+const SERIES_REFRESH_TTL = 1000 * 60 * 60 * 24;
+const COVER_PACK_MANIFEST_URL =
+  process.env.UAI_COVER_PACK_MANIFEST_URL || 'https://covers.cloudflare-blush471.workers.dev/cover-pack.json';
+const COVER_PACK_CHECK_TTL = 1000 * 60 * 60;
+const CATALOG_UPDATE_TTL = 1000 * 60 * 60;
+const MAX_COVER_PACK_BYTES = 12 * 1024 * 1024 * 1024;
+const SHARE_SERVICE_URL = (() => {
+  try {
+    return new URL(process.env.UAI_SHARE_SERVICE_URL || '').origin;
+  } catch {
+    return '';
+  }
+})();
+const TURNSTILE_SITE_KEY = String(process.env.UAI_TURNSTILE_SITE_KEY || '').trim();
+const SHARE_LINKS_ENABLED = Boolean(SHARE_SERVICE_URL && TURNSTILE_SITE_KEY);
 const PACKAGE_VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
 const LATEST_RELEASE_API = 'https://api.github.com/repos/Firehawk52/ultimate-animation-index/releases/latest';
 const RELEASE_BASE_URL = 'https://github.com/Firehawk52/ultimate-animation-index/releases/tag/';
@@ -52,10 +94,14 @@ const TRUST_DOCKER_CLIENT = process.env.UAI_TRUST_DOCKER_CLIENT === '1';
 const UPDATE_SUPPORTED = existsSync(join(ROOT, '.git'));
 const UPDATE_TOKEN = randomBytes(24).toString('base64url');
 let updateRunning = false;
+let catalogDatabase = null;
+let catalogTotal = 0;
 
 mkdirSync(PRIVATE, { recursive: true });
 mkdirSync(CACHE_DIR, { recursive: true });
 mkdirSync(DATA_DIR, { recursive: true });
+mkdirSync(LOCAL_DATA_DIR, { recursive: true });
+mkdirSync(COVER_SUBMISSION_DIR, { recursive: true });
 let coverDirectory = join(DATA_DIR, 'covers');
 if (existsSync(LEGACY_COVER_DIR) && !existsSync(coverDirectory)) {
   try {
@@ -153,6 +199,11 @@ async function getLatestRelease() {
 }
 
 // Shared HTTP helpers and security headers
+function contentSecurityPolicy() {
+  const shareOrigin = SHARE_SERVICE_URL ? ` ${SHARE_SERVICE_URL}` : '';
+  return `default-src 'self'; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self'${shareOrigin}; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`;
+}
+
 function send(res, status, body, type = 'application/json; charset=utf-8') {
   res.writeHead(status, {
     'Content-Type': type,
@@ -161,8 +212,7 @@ function send(res, status, body, type = 'application/json; charset=utf-8') {
     'Referrer-Policy': 'no-referrer',
     'X-Frame-Options': 'DENY',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-    'Content-Security-Policy':
-      "default-src 'self'; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    'Content-Security-Policy': contentSecurityPolicy(),
   });
   res.end(typeof body === 'string' ? body : JSON.stringify(body));
 }
@@ -190,16 +240,266 @@ async function readCatalogSource() {
   return validateCatalog(catalog);
 }
 
-async function applyCatalogCorrectionCode(code) {
-  const current = await readCatalogSource();
-  const input = parseCorrectionCode(code);
-  const { catalog, correction } = applyCorrectionPackage(current, input);
+async function readCatalogSourceWithHash() {
+  const raw = await readFile(CATALOG_SOURCE, 'utf8');
+  const catalog = validateCatalog(JSON.parse(raw));
+  return { raw, catalog, sourceHash: createHash('sha256').update(raw).digest('hex') };
+}
+
+function plainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function decodeEditorReviewPackage(code) {
+  if (typeof code !== 'string' || !code.startsWith(EDITOR_REVIEW_PREFIX) || code.length > 2_000_000)
+    throw new Error('invalid-editor-review');
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(code.slice(EDITOR_REVIEW_PREFIX.length), 'base64url').toString('utf8'));
+  } catch {
+    throw new Error('invalid-editor-review');
+  }
+  if (
+    !plainObject(payload) ||
+    payload.format !== 'ultimate-animation-index-editor' ||
+    payload.schema !== 1 ||
+    !Array.isArray(payload.entries) ||
+    payload.entries.length < 1 ||
+    payload.entries.length > 500 ||
+    !/^[a-f0-9]{64}$/i.test(String(payload.baseHash || ''))
+  )
+    throw new Error('invalid-editor-review');
+  const ids = new Set();
+  for (const entry of payload.entries) {
+    if (
+      !plainObject(entry) ||
+      typeof entry.id !== 'string' ||
+      !/^(?:[a-z][a-z0-9_-]*(?::[a-z0-9][a-z0-9_-]*)+|f:[a-z0-9_-]+)$/i.test(entry.id) ||
+      ids.has(entry.id) ||
+      !plainObject(entry.values) ||
+      JSON.stringify(entry).length > 1_000_000
+    )
+      throw new Error('invalid-editor-review');
+    ids.add(entry.id);
+  }
+  return payload;
+}
+
+function editorValueText(value, maximum = 4_000) {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string' || value.length > maximum || /[\u0000-\u001F\u007F]/.test(value))
+    throw new Error('invalid-editor-review');
+  return value.trim();
+}
+
+function officialItemFromEditorEntry(entry, existing) {
+  const values = entry.values;
+  const title = editorValueText(values.title, 180);
+  if (!title) throw new Error('invalid-editor-review');
+  const next = { ...(existing || {}) };
+  const textFields = [
+    ['title', 180],
+    ['type', 80],
+    ['origin', 240],
+    ['genres', 1000],
+    ['description', 8_000],
+    ['lookupTitle', 240],
+    ['sourceUrl', 2_000],
+    ['coverUrl', 2_000],
+    ['watch_note', 2_000],
+    ['caveat', 2_000],
+  ];
+  for (const [key, maximum] of textFields) {
+    if (!Object.hasOwn(values, key)) continue;
+    const value = editorValueText(values[key], maximum);
+    if ((key === 'sourceUrl' || key === 'coverUrl') && value) {
+      try {
+        const url = new URL(value);
+        if (!['http:', 'https:'].includes(url.protocol)) throw new Error('invalid');
+      } catch {
+        throw new Error('invalid-editor-review');
+      }
+    }
+    if (value) next[key] = value;
+    else delete next[key];
+  }
+  next.id = entry.id;
+  next.title = title;
+  if (Object.hasOwn(values, 'year')) {
+    const year = Number(values.year);
+    if (!Number.isInteger(year) || year < 0 || year > 3000) throw new Error('invalid-editor-review');
+    next.year = year;
+  }
+  if (!existing) {
+    next.provisional = true;
+    next.type ||= 'Series';
+    next.origin ||= 'Unknown';
+    next.lookupTitle ||= title;
+    next.api ||= 'none';
+  }
+  for (const key of ['aliases', 'scores', 'content', 'awards', 'summaryTranslations', 'editorEpisodes']) {
+    if (!Object.hasOwn(values, key)) continue;
+    if ((key === 'aliases' || key === 'awards' || key === 'editorEpisodes') && !Array.isArray(values[key]))
+      throw new Error('invalid-editor-review');
+    if ((key === 'scores' || key === 'content' || key === 'summaryTranslations') && !plainObject(values[key]))
+      throw new Error('invalid-editor-review');
+    next[key] = structuredClone(values[key]);
+  }
+  return next;
+}
+
+function officialFranchiseFromEditorEntry(entry) {
+  const franchise = entry.values?.franchise;
+  if (!plainObject(franchise) || !Array.isArray(franchise.orders)) throw new Error('invalid-editor-review');
+  const id = editorValueText(franchise.id || entry.id.slice(2), 120);
+  const name = editorValueText(franchise.name, 240);
+  if (!id || !name || !/^[a-z0-9][a-z0-9_-]*$/i.test(id)) throw new Error('invalid-editor-review');
+  return { ...structuredClone(franchise), id, name };
+}
+
+function applyEditorReviewToCatalog(catalog, payload) {
+  const next = structuredClone(catalog);
+  const items = new Map(next.items.map((item) => [item.id, item]));
+  const franchises = new Map(next.franchises.map((franchise) => [franchise.id, franchise]));
+  const summary = { updatedTitles: 0, newTitles: 0, updatedFranchises: 0, newFranchises: 0 };
+  for (const entry of payload.entries) {
+    if (entry.id.startsWith('f:')) {
+      const franchise = officialFranchiseFromEditorEntry(entry);
+      if (franchises.has(franchise.id)) summary.updatedFranchises += 1;
+      else summary.newFranchises += 1;
+      franchises.set(franchise.id, franchise);
+      continue;
+    }
+    const existing = items.get(entry.id);
+    const item = officialItemFromEditorEntry(entry, existing);
+    if (existing) summary.updatedTitles += 1;
+    else summary.newTitles += 1;
+    items.set(item.id, item);
+    const embeddedFranchise = entry.values?.editorFranchise;
+    if (plainObject(embeddedFranchise) && embeddedFranchise.id) {
+      const franchiseEntry = { id: `f:${embeddedFranchise.id}`, values: { franchise: embeddedFranchise } };
+      const franchise = officialFranchiseFromEditorEntry(franchiseEntry);
+      if (!franchises.has(franchise.id)) summary.newFranchises += 1;
+      else summary.updatedFranchises += 1;
+      franchises.set(franchise.id, franchise);
+    }
+  }
+  next.items = [...items.values()];
+  next.franchises = [...franchises.values()];
+  validateCatalog(next);
+  return { catalog: next, summary };
+}
+
+async function writeOfficialCatalog(catalog) {
   validateCatalog(catalog);
   const temporary = `${CATALOG_SOURCE}.next`;
   await writeFile(temporary, `${JSON.stringify(catalog, null, 2)}\n`, 'utf8');
   await rename(temporary, CATALOG_SOURCE);
+  if (catalogDatabase) {
+    catalogDatabase.close();
+    catalogDatabase = null;
+  }
   buildCatalog();
-  return correction;
+  catalogTotal = Number(catalogMeta('title_count', '0')) || 0;
+}
+
+async function previewOfficialEditorReview(code) {
+  const payload = decodeEditorReviewPackage(code);
+  const current = await readCatalogSourceWithHash();
+  const conflict = payload.baseHash !== current.sourceHash;
+  const result = conflict ? null : applyEditorReviewToCatalog(current.catalog, payload);
+  return {
+    baseHash: payload.baseHash,
+    currentHash: current.sourceHash,
+    conflict,
+    entries: payload.entries.map((entry) => ({
+      id: entry.id,
+      title: entry.values?.title || entry.values?.franchise?.name || entry.id,
+      kind: entry.id.startsWith('f:') ? 'franchise' : entry.isNew ? 'new-title' : 'title-update',
+    })),
+    summary: result?.summary || null,
+  };
+}
+
+async function materializeEditorCoverAssets(entries) {
+  const overrides = readJson(LOCAL_COVER_OVERRIDES, {});
+  let imported = 0;
+  for (const entry of entries) {
+    const asset = entry?.values?.coverAsset;
+    if (!asset || typeof asset !== 'object') continue;
+    const mime = String(asset.type || '');
+    const extension = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }[mime];
+    const data = String(asset.data || '');
+    const match = data.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/);
+    if (!extension || !match || match[1] !== mime) throw new Error('invalid-editor-cover-asset');
+    const bytes = Buffer.from(match[2], 'base64');
+    if (!bytes.length || bytes.length > 600 * 1024) throw new Error('invalid-editor-cover-asset');
+    const fileName = `${createHash('sha256').update(entry.id).digest('hex').slice(0, 32)}.${extension}`;
+    await writeFile(join(COVER_SUBMISSION_DIR, fileName), bytes);
+    overrides[entry.id] = { ...(overrides[entry.id] || {}), localFile: `data/cover-submissions/${fileName}` };
+    imported++;
+  }
+  if (imported) await writeFile(LOCAL_COVER_OVERRIDES, `${JSON.stringify(overrides, null, 2)}\n`);
+  return imported;
+}
+
+async function applyOfficialEditorReview(code) {
+  const payload = decodeEditorReviewPackage(code);
+  const current = await readCatalogSourceWithHash();
+  if (payload.baseHash !== current.sourceHash) throw new Error('editor-review-base-conflict');
+  const result = applyEditorReviewToCatalog(current.catalog, payload);
+  const coverAssets = await materializeEditorCoverAssets(payload.entries);
+  await writeOfficialCatalog(result.catalog);
+  return { ...result.summary, coverAssets };
+}
+
+async function applyCommunityRecommendationReview(code) {
+  const verified = verifyCode(code);
+  const current = await readCatalogSource();
+  const reviewId = createHash('sha256').update(code).digest('hex');
+  const appliedReviewIds = Array.isArray(current.communityReviewIds) ? current.communityReviewIds : [];
+  if (appliedReviewIds.includes(reviewId)) throw new Error('community-review-already-applied');
+  const next = structuredClone(current);
+  const byId = new Map(next.items.map((item) => [item.id, item]));
+  let recommend = 0;
+  let avoid = 0;
+  let completed = 0;
+  const affectedTitleIds = new Set();
+  for (const opinion of verified.payload.opinions) {
+    const item = byId.get(opinion.id);
+    if (!item) continue;
+    const signal = item.communitySignal || { recommend: 0, avoid: 0, completed: 0, lists: 0 };
+    signal.completed = Number.isInteger(signal.completed) && signal.completed >= 0 ? signal.completed : 0;
+    signal[opinion.verdict] += 1;
+    signal.lists += 1;
+    item.communitySignal = signal;
+    if (opinion.verdict === 'recommend') recommend += 1;
+    else avoid += 1;
+    affectedTitleIds.add(item.id);
+  }
+  for (const id of verified.payload.completed) {
+    const item = byId.get(id);
+    if (!item) continue;
+    const signal = item.communitySignal || { recommend: 0, avoid: 0, completed: 0, lists: 0 };
+    signal.completed =
+      (Number.isInteger(signal.completed) && signal.completed >= 0 ? signal.completed : 0) + 1;
+    item.communitySignal = signal;
+    completed += 1;
+    affectedTitleIds.add(item.id);
+  }
+  if (!affectedTitleIds.size) throw new Error('community-review-has-no-catalog-titles');
+  next.communityReviewIds = [...appliedReviewIds, reviewId];
+  await writeOfficialCatalog(next);
+  return { recommend, avoid, completed, titles: affectedTitleIds.size };
+}
+
+async function applyReleaseUpdates(input, selectedUpdateIds) {
+  const current = await readCatalogSource();
+  const result = applyReleaseUpdatePackage(current, input, selectedUpdateIds);
+  // Validate before replacing the source file: no selected change can leave a partial catalog behind.
+  validateCatalog(result.catalog);
+  await writeOfficialCatalog(result.catalog);
+  return result;
 }
 
 function restartServerAfterUpdate() {
@@ -217,12 +517,12 @@ function restartServerAfterUpdate() {
   setTimeout(() => server.closeAllConnections?.(), 180).unref();
 }
 
-async function readBody(req) {
+async function readBody(req, maxBytes = MAX_BODY) {
   let total = 0;
   const chunks = [];
   for await (const chunk of req) {
     total += chunk.length;
-    if (total > MAX_BODY) throw new Error('body-too-large');
+    if (total > maxBytes) throw new Error('body-too-large');
     chunks.push(chunk);
   }
   const raw = Buffer.concat(chunks).toString('utf8');
@@ -234,8 +534,48 @@ async function readBody(req) {
   }
 }
 
+async function readLocalUserData() {
+  try {
+    const data = JSON.parse(await readFile(LOCAL_USER_DATA, 'utf8'));
+    if (!data || typeof data !== 'object' || Array.isArray(data) || !data.storage) return {};
+    return data.storage;
+  } catch {
+    return {};
+  }
+}
+
+async function writeLocalUserData(storage) {
+  const temporary = `${LOCAL_USER_DATA}.next`;
+  await writeFile(
+    temporary,
+    `${JSON.stringify({ version: 1, savedAt: new Date().toISOString(), storage }, null, 2)}\n`,
+    'utf8',
+  );
+  await rename(temporary, LOCAL_USER_DATA);
+}
+
+async function readLocalCacheData() {
+  try {
+    const data = JSON.parse(await readFile(LOCAL_CACHE_DATA, 'utf8'));
+    if (!data || typeof data !== 'object' || Array.isArray(data) || !data.storage) return {};
+    return data.storage;
+  } catch {
+    return {};
+  }
+}
+
+async function writeLocalCacheData(storage) {
+  const temporary = `${LOCAL_CACHE_DATA}.next`;
+  await writeFile(
+    temporary,
+    `${JSON.stringify({ version: 1, savedAt: new Date().toISOString(), storage }, null, 2)}\n`,
+    'utf8',
+  );
+  await rename(temporary, LOCAL_CACHE_DATA);
+}
+
 // UserList schema validation and signatures
-const allowedRoot = new Set(['v', 'created', 'opinions', 'titles']);
+const allowedRoot = new Set(['v', 'created', 'opinions', 'completed', 'titles']);
 const allowedTitle = new Set([
   'id',
   'title',
@@ -289,7 +629,10 @@ function validatePayload(input) {
   if (!exactKeys(input, allowedRoot)) throw new Error('invalid-schema');
   if (input.v !== 1) throw new Error('unsupported-version');
   if (!Array.isArray(input.opinions) || !Array.isArray(input.titles)) throw new Error('invalid-schema');
-  if (input.opinions.length > 3000 || input.titles.length > 1500) throw new Error('too-many-items');
+  const completedInput = input.completed === undefined ? [] : input.completed;
+  if (!Array.isArray(completedInput)) throw new Error('invalid-schema');
+  if (input.opinions.length > 3000 || completedInput.length > 3000 || input.titles.length > 1500)
+    throw new Error('too-many-items');
   const seenOpinions = new Set();
   const opinions = [];
   for (const o of input.opinions) {
@@ -303,6 +646,14 @@ function validatePayload(input) {
     if (seenOpinions.has(o.id)) throw new Error('duplicate-opinion');
     seenOpinions.add(o.id);
     opinions.push({ id: o.id, verdict: o.verdict });
+  }
+  const seenCompleted = new Set();
+  const completed = [];
+  for (const id of completedInput) {
+    if (typeof id !== 'string' || !safeId.test(id) || seenCompleted.has(id))
+      throw new Error('invalid-completed-title');
+    seenCompleted.add(id);
+    completed.push(id);
   }
   const seenTitles = new Set();
   const titles = [];
@@ -340,7 +691,7 @@ function validatePayload(input) {
   }
   const created = safeText(input.created || new Date().toISOString(), 64, true);
   if (!created) throw new Error('invalid-created');
-  return { v: 1, created, opinions, titles };
+  return { v: 1, created, opinions, completed, titles };
 }
 
 function b64url(buf) {
@@ -397,114 +748,568 @@ function htmlToText(s = '') {
     .trim();
 }
 
-// Remote artwork validation and local cover storage
-const coverInflight = new Map();
-const COVER_HOSTS = [
-  /(^|\.)anilist\.co$/i,
-  /(^|\.)myanimelist\.net$/i,
-  /(^|\.)tvmaze\.com$/i,
-  /(^|\.)wikimedia\.org$/i,
-];
-function allowedCoverUrl(raw = '') {
+// Artwork is package-only. Providers may provide metadata text, but remote
+// image URLs are never returned to the browser or downloaded by this server.
+const COVER_PACK_STATE_PATH = join(LOCAL_DATA_DIR, 'cover-pack-state.json');
+const CATALOG_SYNC_STATE_PATH = join(LOCAL_DATA_DIR, 'catalog-sync-state.json');
+const CATALOG_SYNC_CONFLICTS_PATH = join(LOCAL_DATA_DIR, 'catalog-sync-conflicts.json');
+const COVER_PACK_INDEX_FILE = 'cover-index.json';
+let coverPackState = {};
+let coverPackIndex = { schemaVersion: 1, items: {} };
+let coverPackRemote = { checkedAt: 0, manifest: null, error: '' };
+let coverPackInstallRunning = false;
+let coverPackInstallJob = null;
+let catalogUpdateState = { checkedAt: 0, result: null };
+function readJson(path, fallback) {
   try {
-    const u = new URL(raw);
-    return u.protocol === 'https:' && COVER_HOSTS.some((re) => re.test(u.hostname));
+    return JSON.parse(readFileSync(path, 'utf8'));
   } catch {
-    return false;
+    return fallback;
   }
 }
-function coverExtension(contentType = '', raw = '') {
-  const ct = String(contentType).split(';')[0].trim().toLowerCase();
-  const byType = {
-    'image/jpeg': '.jpg',
-    'image/jpg': '.jpg',
-    'image/png': '.png',
-    'image/webp': '.webp',
-    'image/avif': '.avif',
-    'image/gif': '.gif',
-  };
-  if (byType[ct]) return byType[ct];
-  try {
-    const ext = extname(new URL(raw).pathname).toLowerCase();
-    return ['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif'].includes(ext)
-      ? ext === '.jpeg'
-        ? '.jpg'
-        : ext
-      : '';
-  } catch {
-    return '';
+async function writeJsonAtomic(path, value) {
+  const temporary = `${path}.next`;
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await rename(temporary, path);
+}
+function sameCatalogValue(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+function plainCatalogObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+function mergeCatalogValue(base, local, remote, path, conflicts) {
+  if (sameCatalogValue(local, base)) return structuredClone(remote);
+  if (sameCatalogValue(remote, base) || sameCatalogValue(local, remote)) return structuredClone(local);
+  if (plainCatalogObject(base) && plainCatalogObject(local) && plainCatalogObject(remote)) {
+    const result = {};
+    for (const key of new Set([...Object.keys(base), ...Object.keys(local), ...Object.keys(remote)])) {
+      const baseHas = Object.hasOwn(base, key),
+        localHas = Object.hasOwn(local, key),
+        remoteHas = Object.hasOwn(remote, key);
+      if (!localHas && !remoteHas) continue;
+      if (!localHas) {
+        if (sameCatalogValue(remote[key], base[key])) continue;
+        conflicts.push(path ? `${path}.${key}` : key);
+        continue;
+      }
+      if (!remoteHas) {
+        if (sameCatalogValue(local[key], base[key])) continue;
+        result[key] = structuredClone(local[key]);
+        conflicts.push(path ? `${path}.${key}` : key);
+        continue;
+      }
+      if (!baseHas) {
+        if (sameCatalogValue(local[key], remote[key])) result[key] = structuredClone(local[key]);
+        else {
+          result[key] = structuredClone(local[key]);
+          conflicts.push(path ? `${path}.${key}` : key);
+        }
+        continue;
+      }
+      result[key] = mergeCatalogValue(
+        base[key],
+        local[key],
+        remote[key],
+        path ? `${path}.${key}` : key,
+        conflicts,
+      );
+    }
+    return result;
   }
+  conflicts.push(path || 'catalog');
+  return structuredClone(local);
+}
+function mergeCatalogRows(baseRows = [], localRows = [], remoteRows = [], kind, conflicts) {
+  const byId = (rows) => new Map(rows.filter((row) => row && row.id).map((row) => [row.id, row]));
+  const base = byId(baseRows),
+    local = byId(localRows),
+    remote = byId(remoteRows),
+    merged = [];
+  for (const id of new Set([...base.keys(), ...local.keys(), ...remote.keys()])) {
+    const before = base.get(id),
+      mine = local.get(id),
+      latest = remote.get(id),
+      path = `${kind}:${id}`;
+    if (!before) {
+      if (!mine) merged.push(structuredClone(latest));
+      else if (!latest || sameCatalogValue(mine, latest)) merged.push(structuredClone(mine));
+      else {
+        merged.push(structuredClone(mine));
+        conflicts.push(path);
+      }
+      continue;
+    }
+    if (!mine) {
+      if (!latest || sameCatalogValue(latest, before)) continue;
+      conflicts.push(path);
+      continue;
+    }
+    if (!latest) {
+      if (sameCatalogValue(mine, before)) continue;
+      merged.push(structuredClone(mine));
+      conflicts.push(path);
+      continue;
+    }
+    merged.push(mergeCatalogValue(before, mine, latest, path, conflicts));
+  }
+  return merged;
+}
+function normalizeMergedRanks(catalog) {
+  const ranked = catalog.items
+    .filter((item) => Number.isInteger(item.rank))
+    .sort((left, right) => left.rank - right.rank || String(left.id).localeCompare(String(right.id)));
+  ranked.forEach((item, index) => {
+    item.rank = index + 1;
+  });
+}
+function mergeCatalogs(base, local, remote) {
+  const conflicts = [];
+  const result = mergeCatalogValue(base, local, remote, 'catalog', conflicts);
+  result.items = mergeCatalogRows(base.items, local.items, remote.items, 'title', conflicts);
+  result.collections = mergeCatalogRows(
+    base.collections,
+    local.collections,
+    remote.collections,
+    'collection',
+    conflicts,
+  );
+  result.franchises = mergeCatalogRows(
+    base.franchises,
+    local.franchises,
+    remote.franchises,
+    'franchise',
+    conflicts,
+  );
+  normalizeMergedRanks(result);
+  return { catalog: validateCatalog(result), conflicts };
+}
+function catalogHash(catalog) {
+  return createHash('sha256').update(JSON.stringify(catalog)).digest('hex');
+}
+async function mergeRemoteCatalog(remoteCatalog) {
+  const localCatalog = await readCatalogSource();
+  const state = readJson(CATALOG_SYNC_STATE_PATH, null);
+  // There is no historical base on the very first run. Treat today's local
+  // catalog as that base; from this point forward every remote snapshot is
+  // retained, so editor changes can be merged instead of overwritten.
+  const baseCatalog = state?.remoteCatalog ? validateCatalog(state.remoteCatalog) : localCatalog;
+  let merged;
+  try {
+    merged = mergeCatalogs(baseCatalog, localCatalog, remoteCatalog);
+  } catch (error) {
+    throw new Error(`catalog-merge-invalid: ${error?.message || 'unknown'}`);
+  }
+  const beforeHash = catalogHash(localCatalog);
+  const mergedHash = catalogHash(merged.catalog);
+  const remoteHash = catalogHash(remoteCatalog);
+  if (beforeHash !== mergedHash) await writeOfficialCatalog(merged.catalog);
+  const recordedAt = new Date().toISOString();
+  await writeJsonAtomic(CATALOG_SYNC_STATE_PATH, {
+    schemaVersion: 1,
+    remoteCatalog,
+    remoteCatalogSha256: remoteHash,
+    updatedAt: recordedAt,
+  });
+  await writeJsonAtomic(CATALOG_SYNC_CONFLICTS_PATH, {
+    schemaVersion: 1,
+    remoteCatalogSha256: remoteHash,
+    checkedAt: recordedAt,
+    conflicts: merged.conflicts,
+  });
+  return {
+    changed: beforeHash !== mergedHash,
+    conflicts: merged.conflicts.length,
+    titleCount: merged.catalog.items.length,
+    catalogSha256: remoteHash,
+  };
+}
+function safeCoverPath(value) {
+  const path = String(value || '').replace(/\\/g, '/');
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]*\.(?:webp|png|jpe?g|avif)$/i.test(path) &&
+    !path.includes('..') &&
+    !path.startsWith('/')
+    ? path
+    : '';
+}
+function loadCoverPackIndex() {
+  const parsed = readJson(join(COVER_DIR, COVER_PACK_INDEX_FILE), { schemaVersion: 1, items: {} });
+  coverPackIndex =
+    parsed?.items && typeof parsed.items === 'object' ? parsed : { schemaVersion: 1, items: {} };
+}
+function packageArtwork(itemId) {
+  const entry = coverPackIndex.items?.[itemId];
+  const poster = safeCoverPath(entry?.poster);
+  const backdrop = safeCoverPath(entry?.backdrop);
+  return {
+    cover: poster && existsSync(join(COVER_DIR, poster)) ? `/covers/${poster}` : '',
+    banner: backdrop && existsSync(join(COVER_DIR, backdrop)) ? `/covers/${backdrop}` : '',
+  };
+}
+function packageArtworkIndex() {
+  const items = {};
+  for (const itemId of Object.keys(coverPackIndex.items || {})) {
+    const artwork = packageArtwork(itemId);
+    if (artwork.cover || artwork.banner) items[itemId] = artwork;
+  }
+  return items;
+}
+function withPackageArtwork(data, itemId = '') {
+  if (!data || typeof data !== 'object') return data;
+  return { ...data, ...packageArtwork(itemId), coverRemote: '', bannerRemote: '' };
+}
+function withoutRemoteArtwork(data) {
+  return data && typeof data === 'object'
+    ? { ...data, cover: '', banner: '', coverRemote: '', bannerRemote: '' }
+    : data;
 }
 async function localizeCover(rawUrl = '') {
-  if (!rawUrl) return '';
-  if (rawUrl.startsWith('/covers/')) {
-    const local = join(COVER_DIR, rawUrl.slice('/covers/'.length));
-    return existsSync(local) ? rawUrl : '';
-  }
-  if (!allowedCoverUrl(rawUrl)) return '';
-  const key = createHash('sha256').update(rawUrl).digest('hex').slice(0, 32);
-  for (const ext of ['.jpg', '.png', '.webp', '.avif', '.gif']) {
-    if (existsSync(join(COVER_DIR, `${key}${ext}`))) return `/covers/${key}${ext}`;
-  }
-  if (coverInflight.has(key)) return coverInflight.get(key);
-  const job = (async () => {
-    try {
-      const r = await fetch(rawUrl, {
-        headers: {
-          Accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif;q=0.8,*/*;q=0.1',
-          'User-Agent': 'UltimateAnimationIndex/5.0',
-        },
-        redirect: 'follow',
-        signal: AbortSignal.timeout(20000),
-      });
-      if (!r.ok) return '';
-      const finalUrl = r.url || rawUrl;
-      if (!allowedCoverUrl(finalUrl)) return '';
-      const type = r.headers.get('content-type') || '';
-      const ext = coverExtension(type, finalUrl);
-      if (!ext || !/^image\//i.test(type)) return '';
-      const declared = Number(r.headers.get('content-length') || 0);
-      if (declared && declared > MAX_COVER_BYTES) return '';
-      const buf = Buffer.from(await r.arrayBuffer());
-      if (!buf.length || buf.length > MAX_COVER_BYTES) return '';
-      const file = join(COVER_DIR, `${key}${ext}`);
-      await writeFile(file, buf, { flag: 'wx' }).catch((e) => {
-        if (e?.code !== 'EEXIST') throw e;
-      });
-      return `/covers/${key}${ext}`;
-    } catch {
-      return '';
-    } finally {
-      coverInflight.delete(key);
-    }
-  })();
-  coverInflight.set(key, job);
-  return job;
+  if (!String(rawUrl).startsWith('/covers/')) return '';
+  const local = join(COVER_DIR, String(rawUrl).slice('/covers/'.length));
+  return existsSync(local) ? rawUrl : '';
 }
 async function localizeMetadataArtwork(data) {
-  if (!data || typeof data !== 'object') return data;
-  const remoteCover = data.coverRemote || data.cover || '';
-  const remoteBanner = data.bannerRemote || data.banner || '';
-  let cover = data.cover || '',
-    banner = data.banner || '';
-  if (remoteCover && !String(cover).startsWith('/covers/')) cover = await localizeCover(remoteCover);
-  else if (
-    String(cover).startsWith('/covers/') &&
-    !existsSync(join(COVER_DIR, String(cover).slice('/covers/'.length)))
+  return withoutRemoteArtwork(data);
+}
+function validCoverPackManifest(value) {
+  const archive = value?.archive;
+  const path = String(archive?.path || '').replace(/\\/g, '/');
+  const rootDirectory = String(archive?.rootDirectory || '');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (!Number.isInteger(value.schemaVersion) || value.schemaVersion < 1) return null;
+  if (!/^v?[A-Za-z0-9._-]{1,80}$/.test(String(value.version || ''))) return null;
+  if (!/^packages\/[A-Za-z0-9._/-]+\.zip$/i.test(path) || path.includes('..')) return null;
+  if (!/^[a-f0-9]{64}$/i.test(String(archive?.sha256 || ''))) return null;
+  if (!Number.isSafeInteger(archive?.bytes) || archive.bytes < 1 || archive.bytes > MAX_COVER_PACK_BYTES)
+    return null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(rootDirectory)) return null;
+  const itemIds = Array.isArray(archive?.itemIds) ? archive.itemIds.map((id) => String(id)) : null;
+  if (
+    itemIds &&
+    (itemIds.length !== new Set(itemIds).size ||
+      itemIds.length !== archive.coverCount ||
+      itemIds.some((id) => !id || id.length > 180 || /[\u0000-\u001f]/.test(id)))
   )
-    cover = await localizeCover(remoteCover);
-  // Banners remain remote metadata for now; cards and dialog fall back to the cached local cover.
-  if (banner && !String(banner).startsWith('/covers/')) banner = '';
+    return null;
+  const catalog = value.catalog && typeof value.catalog === 'object' ? value.catalog : null;
+  const catalogPath = String(catalog?.path || '').replace(/\\/g, '/');
+  const catalogSha256 = String(catalog?.sha256 || '').toLowerCase();
+  const catalogContentSha256 = String(catalog?.contentSha256 || '').toLowerCase();
+  if (
+    catalog &&
+    catalogPath &&
+    (catalogPath !== 'catalog-source.json' ||
+      !/^[a-f0-9]{64}$/.test(catalogSha256) ||
+      !/^[a-f0-9]{64}$/.test(catalogContentSha256) ||
+      !Number.isSafeInteger(catalog.bytes) ||
+      catalog.bytes < 1)
+  )
+    return null;
   return {
-    ...data,
-    cover: cover || '',
-    banner: banner || '',
-    coverRemote: remoteCover || '',
-    bannerRemote: remoteBanner || '',
+    schemaVersion: value.schemaVersion,
+    version: String(value.version),
+    generatedAt: typeof value.generatedAt === 'string' ? value.generatedAt : '',
+    packageMode: value.packageMode === 'REVIEWED_ONLY' ? 'REVIEWED_ONLY' : 'FULL',
+    catalog: catalogPath
+      ? {
+          path: catalogPath,
+          sha256: catalogSha256,
+          contentSha256: catalogContentSha256,
+          bytes: catalog.bytes,
+        }
+      : null,
+    archive: {
+      path,
+      sha256: String(archive.sha256).toLowerCase(),
+      bytes: archive.bytes,
+      rootDirectory,
+      coverCount: Number.isSafeInteger(archive.coverCount) ? archive.coverCount : 0,
+      itemIds,
+    },
   };
 }
+async function getRemoteCoverPack({ force = false } = {}) {
+  if (!force && coverPackRemote.checkedAt && Date.now() - coverPackRemote.checkedAt < COVER_PACK_CHECK_TTL)
+    return coverPackRemote;
+  try {
+    const response = await fetch(COVER_PACK_MANIFEST_URL, {
+      headers: { Accept: 'application/json', 'User-Agent': 'UltimateAnimationIndex/cover-pack-check' },
+      signal: AbortSignal.timeout(8000),
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error(`cover-pack-${response.status}`);
+    const manifest = validCoverPackManifest(await response.json());
+    if (!manifest) throw new Error('invalid-cover-pack-manifest');
+    coverPackRemote = { checkedAt: Date.now(), manifest, error: '' };
+  } catch (error) {
+    coverPackRemote = {
+      checkedAt: Date.now(),
+      manifest: null,
+      error: error?.message || 'cover-pack-check-failed',
+    };
+  }
+  return coverPackRemote;
+}
+function coverPackStatus(remote = coverPackRemote, { newCoverCount: installedNewCoverCount } = {}) {
+  const installed = validCoverPackManifest(coverPackState?.manifest);
+  const available = remote.manifest || null;
+  const installedCoverIds = new Set(Object.keys(coverPackIndex.items || {}));
+  const newCoverCount = Number.isSafeInteger(installedNewCoverCount)
+    ? installedNewCoverCount
+    : Array.isArray(available?.archive.itemIds)
+      ? available.archive.itemIds.filter((itemId) => !installedCoverIds.has(itemId)).length
+      : null;
+  return {
+    installed: installed && {
+      version: installed.version,
+      sha256: installed.archive.sha256,
+      coverCount: installed.archive.coverCount,
+      packageMode: installed.packageMode,
+    },
+    available: available && {
+      version: available.version,
+      sha256: available.archive.sha256,
+      bytes: available.archive.bytes,
+      coverCount: available.archive.coverCount,
+      newCoverCount: available.packageMode === 'REVIEWED_ONLY' ? newCoverCount : null,
+      packageMode: available.packageMode,
+    },
+    updateAvailable: Boolean(available && installed?.archive.sha256 !== available.archive.sha256),
+    checking: coverPackInstallRunning,
+    error: remote.error || '',
+  };
+}
+function runProgram(command, args) {
+  return new Promise((resolveProgram, reject) => {
+    const child = spawn(command, args, { windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => (stdout += chunk));
+    child.stderr.on('data', (chunk) => (stderr += chunk));
+    child.once('error', reject);
+    child.once('close', (code) =>
+      code === 0
+        ? resolveProgram({ stdout, stderr })
+        : reject(new Error(`${command} exited with ${code}: ${stderr.trim().slice(0, 500)}`)),
+    );
+  });
+}
+async function downloadCoverArchive(url, destination, expected) {
+  const response = await fetch(url, {
+    headers: { Accept: 'application/zip' },
+    signal: AbortSignal.timeout(1000 * 60 * 30),
+    cache: 'no-store',
+  });
+  if (!response.ok || !response.body) throw new Error(`cover-pack-download-${response.status}`);
+  const advertised = Number(response.headers.get('content-length') || 0);
+  if (advertised && advertised !== expected.bytes) throw new Error('cover-pack-size-mismatch');
+  let bytes = 0;
+  const hash = createHash('sha256');
+  const inspect = new Transform({
+    transform(chunk, _encoding, callback) {
+      bytes += chunk.length;
+      if (bytes > expected.bytes || bytes > MAX_COVER_PACK_BYTES)
+        return callback(new Error('cover-pack-too-large'));
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+  await pipeline(Readable.fromWeb(response.body), inspect, createWriteStream(destination, { flags: 'wx' }));
+  if (bytes !== expected.bytes || hash.digest('hex') !== expected.sha256)
+    throw new Error('cover-pack-checksum-mismatch');
+}
+async function remoteCatalogManifest() {
+  const manifestUrl = new URL('catalog-source-manifest.json', COVER_PACK_MANIFEST_URL);
+  if (manifestUrl.origin !== new URL(COVER_PACK_MANIFEST_URL).origin)
+    throw new Error('catalog-source-origin-mismatch');
+  const response = await fetch(manifestUrl, {
+    headers: { Accept: 'application/json', 'User-Agent': 'UltimateAnimationIndex/cover-pack-catalog' },
+    signal: AbortSignal.timeout(15000),
+    cache: 'no-store',
+  });
+  if (!response.ok) throw new Error(`catalog-manifest-download-${response.status}`);
+  const value = await response.json();
+  if (
+    !value ||
+    value.schemaVersion !== 1 ||
+    value.path !== 'catalog-source.json' ||
+    !/^[a-f0-9]{64}$/i.test(String(value.sha256 || '')) ||
+    !Number.isSafeInteger(value.bytes) ||
+    value.bytes < 1 ||
+    value.bytes > 30 * 1024 * 1024
+  )
+    throw new Error('catalog-manifest-invalid');
+  return { path: value.path, sha256: String(value.sha256).toLowerCase(), bytes: value.bytes };
+}
+async function fetchCatalogForCoverPack(manifest = null) {
+  const expected = await remoteCatalogManifest();
+  const catalogUrl = new URL(expected.path, COVER_PACK_MANIFEST_URL);
+  if (catalogUrl.origin !== new URL(COVER_PACK_MANIFEST_URL).origin)
+    throw new Error('catalog-source-origin-mismatch');
+  const response = await fetch(catalogUrl, {
+    headers: { Accept: 'application/json', 'User-Agent': 'UltimateAnimationIndex/cover-pack-catalog' },
+    signal: AbortSignal.timeout(15000),
+    cache: 'no-store',
+  });
+  if (!response.ok) throw new Error(`catalog-update-download-${response.status}`);
+  const raw = await response.text();
+  if (
+    Buffer.byteLength(raw, 'utf8') !== expected.bytes ||
+    createHash('sha256').update(raw).digest('hex') !== expected.sha256
+  )
+    throw new Error('catalog-update-integrity-failed');
+  let catalog;
+  try {
+    catalog = validateCatalog(JSON.parse(raw));
+  } catch {
+    throw new Error('catalog-update-invalid');
+  }
+  const expectedHash = manifest?.catalog?.contentSha256 || '';
+  const actualHash = createHash('sha256').update(JSON.stringify(catalog)).digest('hex');
+  if (
+    manifest?.catalog &&
+    (manifest.catalog.sha256 !== expected.sha256 || manifest.catalog.bytes !== expected.bytes)
+  )
+    throw new Error('catalog-cover-package-mismatch');
+  if (expectedHash && actualHash !== expectedHash) throw new Error('catalog-cover-package-mismatch');
+  return catalog;
+}
+async function syncCatalogFromCoverStorage({ force = false } = {}) {
+  if (!force && catalogUpdateState.result && Date.now() - catalogUpdateState.checkedAt < CATALOG_UPDATE_TTL)
+    return catalogUpdateState.result;
+  const remote = await fetchCatalogForCoverPack();
+  const result = { ...(await mergeRemoteCatalog(remote)), checkedAt: new Date().toISOString() };
+  catalogUpdateState = { checkedAt: Date.now(), result };
+  return result;
+}
+async function installCoverPack(report = () => {}) {
+  if (coverPackInstallRunning) throw new Error('cover-pack-install-running');
+  coverPackInstallRunning = true;
+  let stage = '';
+  let backup = '';
+  try {
+    report({ phase: 'CHECKING_UPDATE', percent: 8, message: 'Checking the selected cover update…' });
+    const remote = await getRemoteCoverPack({ force: true });
+    const manifest = remote.manifest;
+    if (!manifest) throw new Error(remote.error || 'cover-pack-unavailable');
+    // Cover packages are published alongside the exact catalog snapshot in cover storage.
+    // Fetch and validate it before touching the installed package, so removed or
+    // renamed titles never survive a reviewed-pack update.
+    report({
+      phase: 'DOWNLOADING_CATALOG',
+      percent: 18,
+      message: 'Downloading the matching library snapshot…',
+    });
+    const latestCatalog = manifest.catalog?.contentSha256 ? await fetchCatalogForCoverPack(manifest) : null;
+    const archiveUrl = new URL(manifest.archive.path, COVER_PACK_MANIFEST_URL);
+    if (archiveUrl.origin !== new URL(COVER_PACK_MANIFEST_URL).origin)
+      throw new Error('cover-pack-origin-mismatch');
+    stage = join(DATA_DIR, `.cover-pack-stage-${randomBytes(8).toString('hex')}`);
+    const extracted = join(stage, 'extract');
+    await mkdir(extracted, { recursive: true });
+    const archive = join(stage, 'cover-pack.zip');
+    report({ phase: 'DOWNLOADING_ARCHIVE', percent: 34, message: 'Downloading the verified cover archive…' });
+    await downloadCoverArchive(archiveUrl, archive, manifest.archive);
+    report({
+      phase: 'VERIFYING_ARCHIVE',
+      percent: 58,
+      message: 'Checking archive size and SHA-256 integrity…',
+    });
+    const tar = process.platform === 'win32' ? 'tar.exe' : 'tar';
+    const listing = await runProgram(tar, ['-tf', archive]);
+    const rootPrefix = `${manifest.archive.rootDirectory}/`;
+    const entries = listing.stdout.split(/\r?\n/).filter(Boolean);
+    if (
+      !entries.length ||
+      entries.some(
+        (entry) => entry.startsWith('/') || entry.split('/').includes('..') || !entry.startsWith(rootPrefix),
+      )
+    )
+      throw new Error('unsafe-cover-pack-archive');
+    if (!entries.includes(`${rootPrefix}${COVER_PACK_INDEX_FILE}`))
+      throw new Error('cover-pack-index-missing');
+    report({ phase: 'EXTRACTING', percent: 70, message: 'Unpacking and checking every cover file…' });
+    await runProgram(tar, ['-xf', archive, '-C', extracted]);
+    const root = resolve(extracted, manifest.archive.rootDirectory);
+    if (!root.startsWith(`${resolve(extracted)}${sep}`)) throw new Error('unsafe-cover-pack-root');
+    const index = readJson(join(root, COVER_PACK_INDEX_FILE), null);
+    if (!index?.items || typeof index.items !== 'object') throw new Error('invalid-cover-pack-index');
+    for (const entry of Object.values(index.items)) {
+      const poster = safeCoverPath(entry?.poster);
+      const backdrop = entry?.backdrop ? safeCoverPath(entry.backdrop) : '';
+      if (!poster || !existsSync(join(root, poster)) || (backdrop && !existsSync(join(root, backdrop))))
+        throw new Error('cover-pack-file-missing');
+    }
+    const installedCoverIds = new Set(Object.keys(coverPackIndex.items || {}));
+    const newCoverCount = Object.keys(index.items).filter((itemId) => !installedCoverIds.has(itemId)).length;
+    report({ phase: 'INSTALLING', percent: 84, message: 'Installing the verified cover package…' });
+    backup = join(DATA_DIR, `.covers-backup-${randomBytes(8).toString('hex')}`);
+    await rename(COVER_DIR, backup);
+    await rename(root, COVER_DIR);
+    // A cover package has an exact catalog snapshot, but editor changes made
+    // since the package was built still win and are recorded as conflicts.
+    report({
+      phase: 'UPDATING_LIBRARY',
+      percent: 92,
+      message: 'Updating the local library from the matching snapshot…',
+    });
+    if (latestCatalog) await mergeRemoteCatalog(latestCatalog);
+    coverPackState = { manifest, installedAt: new Date().toISOString() };
+    await writeFile(COVER_PACK_STATE_PATH, `${JSON.stringify(coverPackState, null, 2)}\n`);
+    loadCoverPackIndex();
+    await rm(backup, { recursive: true, force: true });
+    backup = '';
+    return coverPackStatus(remote, { newCoverCount });
+  } finally {
+    if (backup && existsSync(backup) && !existsSync(COVER_DIR))
+      await rename(backup, COVER_DIR).catch(() => {});
+    if (stage) await rm(stage, { recursive: true, force: true }).catch(() => {});
+    coverPackInstallRunning = false;
+  }
+}
+function startCoverPackInstall() {
+  if (coverPackInstallJob?.status === 'RUNNING' || coverPackInstallRunning)
+    throw new Error('cover-pack-install-running');
+  const job = {
+    id: randomBytes(12).toString('hex'),
+    status: 'RUNNING',
+    detail: { phase: 'QUEUED', percent: 1, message: 'Preparing the cover update…' },
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  coverPackInstallJob = job;
+  const report = (detail) => {
+    job.detail = { ...job.detail, ...detail };
+    job.updatedAt = new Date().toISOString();
+  };
+  void (async () => {
+    try {
+      const result = await installCoverPack(report);
+      job.status = 'COMPLETED';
+      job.detail = {
+        phase: 'COMPLETE',
+        percent: 100,
+        message: 'Cover update installed and library refreshed.',
+        result,
+      };
+    } catch (error) {
+      job.status = 'FAILED';
+      job.detail = { phase: 'FAILED', percent: 0, message: error?.message || 'Cover installation failed.' };
+    } finally {
+      job.updatedAt = new Date().toISOString();
+    }
+  })();
+  return job;
+}
+coverPackState = readJson(COVER_PACK_STATE_PATH, {});
+loadCoverPackIndex();
 function normMetaTitle(s = '') {
   return String(s)
+    .replace(/æ/gi, 'ae')
+    .replace(/œ/gi, 'oe')
+    .replace(/ß/g, 'ss')
+    .replace(/ø/gi, 'o')
+    .replace(/þ/gi, 'th')
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
@@ -515,7 +1320,7 @@ function normMetaTitle(s = '') {
 
 // Metadata provider adapters
 const ANILIST_FIELDS = `id title{romaji english native} coverImage{extraLarge large} bannerImage seasonYear format status episodes duration genres tags{name rank isMediaSpoiler} averageScore siteUrl description(asHtml:false) isAdult studios(isMain:true){nodes{name}}`;
-const ANILIST_SERIES_FIELDS = `id title{romaji english native} coverImage{extraLarge large} seasonYear startDate{year month day} format status episodes duration siteUrl relations{edges{relationType(version:2) node{id type}}}`;
+const ANILIST_SERIES_FIELDS = `id idMal title{romaji english native} coverImage{extraLarge large} seasonYear startDate{year month day} format status episodes duration siteUrl relations{edges{relationType(version:2) node{id type format}}}`;
 
 function contentLabels(labels = []) {
   const relevant =
@@ -639,7 +1444,7 @@ async function fetchAniList(query, variables) {
 
 export function fromAniListSeriesMedia(media) {
   if (!media?.id) return null;
-  const onePart = ['MOVIE', 'SPECIAL', 'OVA'].includes(media.format);
+  const onePart = ['MOVIE', 'SPECIAL', 'OVA', 'ONA'].includes(media.format);
   return {
     id: String(media.id),
     provider: 'anilist',
@@ -655,10 +1460,65 @@ export function fromAniListSeriesMedia(media) {
     duration: Number(media.duration) || 0,
     cover: media.coverImage?.extraLarge || media.coverImage?.large || '',
     siteUrl: media.siteUrl || '',
+    malId: Number(media.idMal) || 0,
     relations: (media.relations?.edges || [])
-      .filter((edge) => edge?.node?.type === 'ANIME' && ['PREQUEL', 'SEQUEL'].includes(edge.relationType))
+      .filter((edge) => {
+        if (edge?.node?.type !== 'ANIME') return false;
+        if (['PREQUEL', 'SEQUEL'].includes(edge.relationType)) return true;
+        return edge.relationType === 'SIDE_STORY' && ['OVA', 'ONA', 'SPECIAL'].includes(edge.node.format);
+      })
       .map((edge) => ({ id: String(edge.node.id), type: edge.relationType })),
   };
+}
+
+function seriesCandidateScore(candidate, title) {
+  const target = normMetaTitle(title);
+  const names = [candidate.title, candidate.altTitle].filter(Boolean).map(normMetaTitle);
+  const exact = names.some((name) => name === target);
+  let score = exact ? 100 : names.some((name) => name.includes(target) || target.includes(name)) ? 60 : 0;
+  if (candidate.format === 'TV' || candidate.format === 'TV_SHORT' || candidate.type === 'Animation')
+    score += 12;
+  if (candidate.year) score += 2;
+  return score;
+}
+
+function normalizeSeriesCandidates(candidates, title) {
+  return candidates
+    .filter((candidate) => candidate?.provider && candidate?.id && candidate?.title)
+    .map((candidate) => ({ ...candidate, score: seriesCandidateScore(candidate, title) }))
+    .filter((candidate) => candidate.score > 0)
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        Number(right.year || 0) - Number(left.year || 0) ||
+        String(left.title).localeCompare(String(right.title)),
+    )
+    .slice(0, 8)
+    .map(({ score, ...candidate }) => candidate);
+}
+
+async function listAniListSeriesCandidates(title) {
+  const data = await fetchAniList(
+    `query($search:String!){Page(page:1,perPage:8){media(search:$search,type:ANIME){${ANILIST_SERIES_FIELDS}}}}`,
+    { search: title },
+  );
+  return normalizeSeriesCandidates(
+    (data.Page?.media || [])
+      .map(fromAniListSeriesMedia)
+      .filter(Boolean)
+      .map((entry) => ({
+        provider: 'anilist',
+        id: entry.id,
+        title: entry.title,
+        altTitle: entry.altTitle,
+        year: entry.year,
+        format: entry.format,
+        status: entry.status,
+        episodes: entry.episodes,
+        cover: entry.cover,
+      })),
+    title,
+  );
 }
 
 export function anilistSeriesNeedsRefresh(group) {
@@ -669,6 +1529,75 @@ export function anilistSeriesNeedsRefresh(group) {
 
 export function tvMazeSeriesNeedsRefresh(group) {
   return group?.showStatus !== 'Ended';
+}
+
+let lastJikanEpisodeRequest = 0;
+async function waitForJikanEpisodeSlot() {
+  const wait = Math.max(0, 380 - (Date.now() - lastJikanEpisodeRequest));
+  if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+  lastJikanEpisodeRequest = Date.now();
+}
+
+async function getJikanEpisodeTitles(malId, expectedEpisodes = 0) {
+  const id = Number(malId) || 0;
+  const expected = Math.max(0, Number(expectedEpisodes) || 0);
+  if (!id) return [];
+
+  const key = `episodes:jikan:v2:${id}`;
+  const cached = metadataCache[key];
+  const cachedTitles = Array.isArray(cached?.data) ? cached.data : [];
+  const cacheFresh = cached?.ts && Date.now() - cached.ts < 1000 * 60 * 60 * 24;
+  if (cachedTitles.length && ((expected && cachedTitles.length >= expected) || cacheFresh)) {
+    return expected ? cachedTitles.slice(0, expected) : cachedTitles;
+  }
+
+  const titles = [];
+  let page = 1;
+  let hasNextPage = true;
+
+  try {
+    while (hasNextPage && page <= 50) {
+      await waitForJikanEpisodeSlot();
+      let response = await fetch(`https://api.jikan.moe/v4/anime/${id}/episodes?page=${page}`, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(12000),
+      });
+
+      if (response.status === 429) {
+        const retryAfter = Math.max(1, Number(response.headers.get('retry-after')) || 1);
+        await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+        await waitForJikanEpisodeSlot();
+        response = await fetch(`https://api.jikan.moe/v4/anime/${id}/episodes?page=${page}`, {
+          headers: { Accept: 'application/json' },
+          signal: AbortSignal.timeout(12000),
+        });
+      }
+
+      if (!response.ok) throw new Error(`jikan-episodes-${response.status}`);
+      const body = await response.json();
+      const rows = Array.isArray(body.data) ? body.data : [];
+
+      for (const episode of rows) {
+        const number = Number(episode?.mal_id) || titles.length + 1;
+        if (number < 1) continue;
+        while (titles.length < number) titles.push('');
+        titles[number - 1] = String(
+          episode?.title || episode?.title_romanji || episode?.title_japanese || '',
+        ).trim();
+      }
+
+      hasNextPage = Boolean(body.pagination?.has_next_page);
+      if (expected && titles.length >= expected) break;
+      page += 1;
+    }
+
+    const normalized = expected ? titles.slice(0, expected) : titles;
+    metadataCache[key] = { ts: Date.now(), data: normalized };
+    persistCacheSoon();
+    return normalized;
+  } catch {
+    return expected ? cachedTitles.slice(0, expected) : cachedTitles;
+  }
 }
 
 async function fetchAniListSeriesNodes(ids) {
@@ -682,18 +1611,26 @@ async function fetchAniListSeriesNodes(ids) {
   return ids.map((_, index) => fromAniListSeriesMedia(data[`m${index}`])).filter(Boolean);
 }
 
-async function getAniListSeries(title) {
-  const key = `series:anilist:${normMetaTitle(title)}`;
+async function getAniListSeries(title, selectedId = '') {
+  const selected = /^\d+$/.test(String(selectedId)) ? String(selectedId) : '';
+  const key = `series:anilist:v6:${normMetaTitle(title)}:${selected || 'auto'}`;
   const cached = metadataCache[key];
-  // Finished and cancelled series are immutable locally. Active AniList series
-  // deliberately bypass the cache so new episodes and sequel relations appear
-  // the next time a user opens the tracker.
-  if (cached?.data && !anilistSeriesNeedsRefresh(cached.data)) return cached.data;
+  // Finished and cancelled series remain cached indefinitely. Active series are
+  // refreshed at most once per day, even when users reopen their tracker.
+  if (
+    cached?.data &&
+    (!anilistSeriesNeedsRefresh(cached.data) || Date.now() - cached.ts < SERIES_REFRESH_TTL)
+  )
+    return cached.data;
 
-  const rootData = await fetchAniList(
-    `query($search:String!){Media(search:$search,type:ANIME){${ANILIST_SERIES_FIELDS}}}`,
-    { search: title },
-  );
+  const rootData = selected
+    ? await fetchAniList(`query($id:Int!){Media(id:$id,type:ANIME){${ANILIST_SERIES_FIELDS}}}`, {
+        id: Number(selected),
+      })
+    : await fetchAniList(
+        `query($search:String!){Media(search:$search,type:ANIME){${ANILIST_SERIES_FIELDS}}}`,
+        { search: title },
+      );
   const root = fromAniListSeriesMedia(rootData.Media);
   if (!root) throw new Error('not-found');
   const entries = new Map([[root.id, root]]);
@@ -716,6 +1653,7 @@ async function getAniListSeries(title) {
   for (const entry of entries.values()) {
     localized.push({
       ...entry,
+      episodeTitles: await getJikanEpisodeTitles(entry.malId, entry.episodes),
       cover: await localizeCover(entry.cover),
       relations: undefined,
     });
@@ -766,6 +1704,7 @@ export function fromTVMazeSeries(show) {
       return {
         id: `${show.id}:season:${season}`,
         provider: 'tvmaze',
+        seasonNumber: season,
         title: season ? `${show.name} Season ${season}` : `${show.name} Specials`,
         altTitle: show.name || '',
         year,
@@ -776,6 +1715,7 @@ export function fromTVMazeSeries(show) {
         duration: Number(show.averageRuntime || show.runtime) || 0,
         cover: show.image?.original || show.image?.medium || '',
         siteUrl: show.url || show.officialSite || '',
+        episodeTitles: rows.map((episode) => String(episode.name || '').trim()),
       };
     });
   return {
@@ -788,29 +1728,138 @@ export function fromTVMazeSeries(show) {
   };
 }
 
-async function getTVMazeSeries(title) {
-  const key = `series:tvmaze:${normMetaTitle(title)}`;
+async function getTVMazeSeries(title, selectedId = '') {
+  const selected = /^\d+$/.test(String(selectedId)) ? String(selectedId) : '';
+  const key = `series:tvmaze:v3:${normMetaTitle(title)}:${selected || 'auto'}`;
   const cached = metadataCache[key];
-  if (cached?.data && !tvMazeSeriesNeedsRefresh(cached.data)) return cached.data;
+  if (cached?.data && (!tvMazeSeriesNeedsRefresh(cached.data) || Date.now() - cached.ts < SERIES_REFRESH_TTL))
+    return cached.data;
 
-  const response = await fetch(
-    `https://api.tvmaze.com/singlesearch/shows?q=${encodeURIComponent(title)}&embed=episodes`,
-    {
+  let candidates;
+  if (selected) {
+    candidates = [{ id: selected }];
+  } else {
+    const response = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(title)}`, {
       headers: { Accept: 'application/json', 'User-Agent': 'UltimateAnimationIndex/2.0' },
       signal: AbortSignal.timeout(12000),
-    },
-  );
+    });
+    if (!response.ok) throw new Error(`tvmaze-${response.status}`);
+    const target = normMetaTitle(title);
+    candidates = (await response.json())
+      .map((row) => row?.show)
+      .filter((show) => show?.id)
+      .sort((left, right) => {
+        const score = (show) => {
+          const name = normMetaTitle(show.name);
+          let value = name === target ? 100 : name.includes(target) || target.includes(name) ? 60 : 0;
+          if (show.type === 'Animation') value += 20;
+          if (show.status === 'Ended') value += 8;
+          if (show.premiered) value += 3;
+          return value;
+        };
+        return score(right) - score(left);
+      });
+  }
+  for (const candidate of candidates.slice(0, 6)) {
+    const details = await fetch(
+      `https://api.tvmaze.com/shows/${encodeURIComponent(candidate.id)}?embed=episodes`,
+      {
+        headers: { Accept: 'application/json', 'User-Agent': 'UltimateAnimationIndex/2.0' },
+        signal: AbortSignal.timeout(12000),
+      },
+    );
+    if (!details.ok) continue;
+    const result = fromTVMazeSeries(await details.json());
+    if (!result?.entries.length) continue;
+    for (const entry of result.entries) entry.cover = await localizeCover(entry.cover);
+    metadataCache[key] = { ts: Date.now(), data: result };
+    persistCacheSoon();
+    return result;
+  }
+  throw new Error('not-found');
+}
+
+async function listTVMazeSeriesCandidates(title) {
+  const response = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(title)}`, {
+    headers: { Accept: 'application/json', 'User-Agent': 'UltimateAnimationIndex/2.0' },
+    signal: AbortSignal.timeout(12000),
+  });
   if (!response.ok) throw new Error(`tvmaze-${response.status}`);
-  const result = fromTVMazeSeries(await response.json());
-  if (!result?.entries.length) throw new Error('not-found');
-  for (const entry of result.entries) entry.cover = await localizeCover(entry.cover);
-  metadataCache[key] = { ts: Date.now(), data: result };
-  persistCacheSoon();
-  return result;
+  return normalizeSeriesCandidates(
+    (await response.json())
+      .map((row) => row?.show)
+      .filter((show) => show?.id)
+      .map((show) => ({
+        provider: 'tvmaze',
+        id: String(show.id),
+        title: show.name || '',
+        altTitle: '',
+        year: show.premiered ? Number(String(show.premiered).slice(0, 4)) : 0,
+        format: show.type || '',
+        status: show.status || '',
+        episodes: 0,
+        cover: show.image?.medium || show.image?.original || '',
+        type: show.type || '',
+      })),
+    title,
+  );
+}
+
+async function getSeriesCandidates(kind, title) {
+  const providers = kind === 'anilist' ? ['anilist', 'tvmaze'] : ['tvmaze', 'anilist'];
+  for (const provider of providers) {
+    try {
+      const candidates =
+        provider === 'anilist'
+          ? await listAniListSeriesCandidates(title)
+          : await listTVMazeSeriesCandidates(title);
+      if (!candidates.length) continue;
+      const target = normMetaTitle(title);
+      const exact = candidates.filter((candidate) =>
+        [candidate.title, candidate.altTitle].filter(Boolean).some((name) => normMetaTitle(name) === target),
+      );
+      return {
+        provider,
+        candidates,
+        requiresChoice: exact.length > 1 || (!exact.length && candidates.length > 1),
+      };
+    } catch {}
+  }
+  return { provider: '', candidates: [], requiresChoice: false };
+}
+
+async function getSeriesWithFallback(kind, title, selection = {}) {
+  const requestedProvider = ['anilist', 'tvmaze'].includes(selection.provider) ? selection.provider : '';
+  const requestedId = /^\d+$/.test(String(selection.id || '')) ? String(selection.id) : '';
+  const providers = requestedProvider
+    ? [requestedProvider]
+    : kind === 'anilist'
+      ? ['anilist', 'tvmaze']
+      : ['tvmaze', 'anilist'];
+  let lastError = null;
+  for (const provider of providers) {
+    try {
+      const selectedId = provider === requestedProvider ? requestedId : '';
+      const data =
+        provider === 'anilist'
+          ? await getAniListSeries(title, selectedId)
+          : await getTVMazeSeries(title, selectedId);
+      if (Array.isArray(data?.entries) && data.entries.length) return data;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error('not-found');
 }
 async function metaAniList(title) {
   const query = `query($s:String){Media(search:$s,type:ANIME){${ANILIST_FIELDS}}}`;
   const data = await fetchAniList(query, { s: title });
+  return fromAniListMedia(data.Media, title);
+}
+async function metaAniListById(id, title) {
+  const data = await fetchAniList(`query($id:Int!){Media(id:$id,type:ANIME){${ANILIST_FIELDS}}}`, {
+    id: Number(id),
+  });
   return fromAniListMedia(data.Media, title);
 }
 async function metaAniListBatch(titles) {
@@ -932,6 +1981,17 @@ async function metaTVMaze(title) {
   });
   if (!r.ok) throw new Error(`tvmaze-${r.status}`);
   const m = await r.json();
+  return metadataFromTVMazeShow(m, title);
+}
+async function metaTVMazeById(id, title) {
+  const r = await fetch(`https://api.tvmaze.com/shows/${encodeURIComponent(id)}`, {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!r.ok) throw new Error(`tvmaze-${r.status}`);
+  return metadataFromTVMazeShow(await r.json(), title);
+}
+async function metadataFromTVMazeShow(m, title) {
   let data = {
     source: 'tvmaze',
     externalId: String(m.id),
@@ -981,16 +2041,14 @@ async function metaTVMaze(title) {
   }
   return data;
 }
-function cacheKey(kind, title) {
-  return `${kind}:${String(title).toLowerCase()}`;
+function cacheKey(kind, title, externalId = '') {
+  const id = String(externalId || '').trim();
+  return id ? `${kind}:id:${id}` : `${kind}:${String(title).toLowerCase()}`;
 }
-function cacheGet(kind, title) {
-  const hit = metadataCache[cacheKey(kind, title)];
+function cacheGet(kind, title, externalId = '') {
+  const hit = metadataCache[cacheKey(kind, title, externalId)];
   if (!hit || Date.now() - hit.ts >= META_TTL) return null;
   const d = hit.data;
-  if (d?.cover && !String(d.cover).startsWith('/covers/')) return null;
-  if (d?.cover?.startsWith('/covers/') && !existsSync(join(COVER_DIR, d.cover.slice('/covers/'.length))))
-    return null;
   if (d && d.contentEstimateVersion !== 1) {
     d.content = d.content
       ? { ...d.content, tags: contentLabels(d.content.tags || []) }
@@ -1004,19 +2062,19 @@ function cacheGet(kind, title) {
   }
   return d;
 }
-function cachePut(kind, title, data) {
+function cachePut(kind, title, data, externalId = '') {
   if (data?.content) data.contentEstimateVersion = 1;
-  metadataCache[cacheKey(kind, title)] = { ts: Date.now(), data };
+  metadataCache[cacheKey(kind, title, externalId)] = { ts: Date.now(), data };
   persistCacheSoon();
   return data;
 }
-async function getMetadata(kind, title) {
-  const cached = cacheGet(kind, title);
+async function getMetadata(kind, title, externalId = '') {
+  const cached = cacheGet(kind, title, externalId);
   if (cached) return cached;
   let data;
   if (kind === 'anilist') {
     try {
-      data = await metaAniList(title);
+      data = externalId ? await metaAniListById(externalId, title) : await metaAniList(title);
     } catch {
       try {
         data = await metaJikan(title);
@@ -1042,22 +2100,36 @@ async function getMetadata(kind, title) {
         };
       } catch {}
     }
-  } else if (kind === 'tvmaze') data = await metaTVMaze(title);
+  } else if (kind === 'tvmaze')
+    data = externalId ? await metaTVMazeById(externalId, title) : await metaTVMaze(title);
   else if (kind === 'wiki') data = await metaWiki(title);
   else throw new Error('unsupported-metadata-kind');
   data = await localizeMetadataArtwork(data);
-  return cachePut(kind, title, data);
+  return cachePut(kind, title, data, externalId);
+}
+async function mapWithConcurrency(values, limit, worker) {
+  const output = new Array(values.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(Math.max(1, limit), values.length) }, async () => {
+    while (cursor < values.length) {
+      const index = cursor++;
+      output[index] = await worker(values[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return output;
 }
 async function getMetadataBatch(items) {
   const results = [];
   const misses = [];
   for (const it of items) {
-    const cached = cacheGet(it.kind, it.title);
-    if (cached) results.push({ key: it.key, data: cached });
+    const cached = cacheGet(it.kind, it.title, it.externalId);
+    if (cached) results.push({ key: it.key, data: withPackageArtwork(cached, it.key) });
     else misses.push(it);
   }
-  const ani = misses.filter((x) => x.kind === 'anilist');
-  const other = misses.filter((x) => x.kind !== 'anilist');
+  const ani = misses.filter((x) => x.kind === 'anilist' && !x.externalId);
+  const byExternalId = misses.filter((x) => x.externalId);
+  const other = misses.filter((x) => x.kind !== 'anilist' && !x.externalId);
   if (ani.length) {
     let rows = [];
     try {
@@ -1065,8 +2137,7 @@ async function getMetadataBatch(items) {
     } catch {
       rows = new Array(ani.length).fill(null);
     }
-    for (let i = 0; i < ani.length; i++) {
-      const it = ani[i];
+    const resolved = await mapWithConcurrency(ani, 4, async (it, i) => {
       let data = rows[i];
       if (!data || !data.cover) {
         try {
@@ -1090,79 +2161,334 @@ async function getMetadataBatch(items) {
       }
       if (data) {
         data = await localizeMetadataArtwork(data);
-        cachePut(it.kind, it.title, data);
-        results.push({ key: it.key, data });
-      } else results.push({ key: it.key, error: 'not-found' });
-    }
+        cachePut(it.kind, it.title, data, it.externalId);
+        return { key: it.key, data: withPackageArtwork(data, it.key) };
+      }
+      return { key: it.key, error: 'not-found' };
+    });
+    results.push(...resolved);
   }
-  for (const it of other) {
+  const remaining = [...other, ...byExternalId];
+  const resolved = await mapWithConcurrency(remaining, 4, async (it) => {
     try {
-      const data = await getMetadata(it.kind, it.title);
-      results.push({ key: it.key, data });
+      return {
+        key: it.key,
+        data: withPackageArtwork(await getMetadata(it.kind, it.title, it.externalId), it.key),
+      };
     } catch (e) {
-      results.push({ key: it.key, error: e?.message || 'not-found' });
+      return { key: it.key, error: e?.message || 'not-found' };
     }
-  }
+  });
+  results.push(...resolved);
   return results;
 }
 
-const CATALOG_TOTAL = (() => {
-  try {
-    const c = JSON.parse(readFileSync(join(PUBLIC, 'catalog.json'), 'utf8'));
-    return Array.isArray(c.items) ? c.items.length : 0;
-  } catch {
-    return 0;
-  }
-})();
+function normalizeCatalogQuery(value = '') {
+  return String(value)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
-// Background artwork cache warmer
-const warmState = { running: false, total: 0, done: 0, failed: 0, startedAt: '', finishedAt: '' };
-function coverFileCount() {
+function openCatalogDatabase() {
+  if (catalogDatabase) return catalogDatabase;
+  if (!existsSync(CATALOG_DATABASE)) buildCatalog();
+  catalogDatabase = new DatabaseSync(CATALOG_DATABASE, { readOnly: true });
+  return catalogDatabase;
+}
+
+function catalogMeta(key, fallback = '') {
   try {
-    return readdirSync(COVER_DIR).filter((n) => /\.(?:jpe?g|png|webp|avif|gif)$/i.test(n)).length;
+    return (
+      openCatalogDatabase().prepare('SELECT value FROM catalog_meta WHERE key = ?').get(key)?.value ??
+      fallback
+    );
   } catch {
-    return 0;
+    return fallback;
   }
 }
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-function hasLocalArtwork(kind, title) {
-  const hit = metadataCache[cacheKey(kind, title)];
-  const cover = hit?.data?.cover || '';
-  return !!(cover.startsWith('/covers/') && existsSync(join(COVER_DIR, cover.slice('/covers/'.length))));
-}
-async function warmCatalogArtwork() {
-  if (warmState.running) return;
-  warmState.running = true;
-  warmState.startedAt = new Date().toISOString();
-  warmState.finishedAt = '';
-  warmState.failed = 0;
-  warmState.done = 0;
+
+function catalogEntity(kind, fallback) {
   try {
-    const catalog = JSON.parse(await readFile(join(PUBLIC, 'catalog.json'), 'utf8'));
-    const all = (catalog.items || [])
-      .filter((x) => x?.id && ['anilist', 'tvmaze', 'wiki'].includes(x.api))
-      .map((x) => ({ key: x.id, kind: x.api, title: x.lookupTitle || x.title }))
-      .filter((x) => !hasLocalArtwork(x.kind, x.title));
-    warmState.total = all.length;
-    const batchSize = 10;
-    for (let i = 0; i < all.length; i += batchSize) {
-      const batch = all.slice(i, i + batchSize);
-      try {
-        const rows = await getMetadataBatch(batch);
-        warmState.failed += rows.filter((r) => r.error || !r.data?.cover).length;
-      } catch {
-        warmState.failed += batch.length;
-      }
-      warmState.done = Math.min(i + batch.length, all.length);
-      if (i + batchSize < all.length) await delay(2800);
-    }
-  } catch (e) {
-    console.warn('Artwork warm-up stopped:', e?.message || e);
-  } finally {
-    warmState.running = false;
-    warmState.finishedAt = new Date().toISOString();
+    const value = openCatalogDatabase()
+      .prepare('SELECT data_json FROM catalog_entities WHERE kind = ?')
+      .get(kind)?.data_json;
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
   }
 }
+
+function catalogPersonalProgress(raw = {}) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return new Map();
+  const aliases = { Completed: 'Watched' };
+  const allowed = new Set(['Not started', 'Watching', 'On hold', 'Dropped', 'Skipped', 'Watched']);
+  return new Map(
+    Object.entries(raw)
+      .slice(0, 20_000)
+      .filter(([id, value]) => /^[a-z][a-z0-9_-]*(?::[a-z0-9][a-z0-9_-]*)+$/i.test(id) && value)
+      .map(([id, value]) => [
+        id,
+        {
+          status: allowed.has(aliases[value.status] || value.status)
+            ? aliases[value.status] || value.status
+            : 'Not started',
+          rating: Math.max(0, Math.min(10, Number(value.rating) || 0)),
+        },
+      ]),
+  );
+}
+
+// List views only need the fields used to paint a card and queue a metadata
+// lookup.  Keeping award evidence, long notes and provider fields out of the
+// first-page response is what keeps a 10,000+ title catalog responsive.  The
+// complete record remains available through /api/catalog/title/:id when a
+// user opens that title.
+function catalogListItem(item = {}) {
+  const awards = Array.isArray(item.awards)
+    ? item.awards.map((award) => ({
+        programKey: award?.programKey || '',
+        result: award?.result || '',
+      }))
+    : [];
+  return {
+    id: item.id,
+    title: item.title,
+    year: item.year,
+    type: item.type,
+    origin: item.origin,
+    genres: item.genres,
+    tier: item.tier,
+    quality_band: item.quality_band,
+    rank: item.rank,
+    api: item.api,
+    lookupTitle: item.lookupTitle,
+    externalId: item.externalId,
+    content: item.content,
+    scores: item.scores,
+    fit_score: item.fit_score,
+    aliases: item.aliases,
+    awards,
+    catalogSummary: true,
+  };
+}
+
+function catalogPage(search = {}, rawProgress = {}) {
+  const database = openCatalogDatabase();
+  const progress = catalogPersonalProgress(rawProgress);
+  const scope = ['master', 'mature', 'kids'].includes(search.scope) ? search.scope : 'master';
+  const offset = Math.max(0, Math.min(Number.parseInt(search.offset, 10) || 0, 100_000));
+  const limit = Math.max(1, Math.min(Number.parseInt(search.limit, 10) || 60, MAX_CATALOG_PAGE_LIMIT));
+  const allowedSort = new Set([
+    'rank',
+    'overall',
+    'production',
+    'story',
+    'emotional',
+    'year',
+    'title',
+    'myrating',
+  ]);
+  const sort = allowedSort.has(search.sort) ? search.sort : 'rank';
+  const order = search.order === 'asc' ? 'asc' : 'desc';
+  const where = [];
+  const params = [];
+  const requestedIds = Array.isArray(search.ids)
+    ? [...new Set(search.ids.filter((id) => typeof id === 'string' && id.length <= 240))].slice(0, 20_000)
+    : [];
+  const requestedTitles = Array.isArray(search.titles)
+    ? [...new Set(search.titles.map(normalizeCatalogQuery).filter(Boolean))].slice(0, 1_000)
+    : [];
+  const requestedTitleClauses = [];
+  if (requestedIds.length) {
+    requestedTitleClauses.push(`id IN (${requestedIds.map(() => '?').join(', ')})`);
+    params.push(...requestedIds);
+  }
+  if (requestedTitles.length) {
+    requestedTitleClauses.push(`title_key IN (${requestedTitles.map(() => '?').join(', ')})`);
+    params.push(...requestedTitles);
+  }
+  if (requestedTitleClauses.length) {
+    where.push(`(${requestedTitleClauses.join(' OR ')})`);
+  } else if (search.onlyIds === true) {
+    where.push('0 = 1');
+  }
+  if (scope === 'mature') where.push('is_mature = 1');
+  if (scope === 'kids') where.push('is_kids = 1');
+  const matureMode = String(search.matureMode || 'all');
+  if (scope === 'mature' && matureMode === 'hentai')
+    where.push("(LOWER(data_json) LIKE '%\"hentai\"%' OR LOWER(type) LIKE '%hentai%')");
+  if (scope === 'mature' && matureMode === 'ecchi')
+    where.push("(LOWER(data_json) LIKE '%\"ecchi\"%' OR LOWER(data_json) LIKE '%ecchi%')");
+  if (scope === 'mature' && matureMode === 'erotic')
+    where.push("(LOWER(data_json) LIKE '%\"erotic\"%' OR LOWER(data_json) LIKE '%sex comedy%')");
+  if (scope === 'mature' && matureMode === 'gore')
+    where.push("(json_extract(data_json, '$.content.gore') >= 4 OR LOWER(data_json) LIKE '%\"gore\"%')");
+  if (scope === 'mature' && matureMode === 'violence')
+    where.push(
+      "(json_extract(data_json, '$.content.violence') >= 5 OR LOWER(data_json) LIKE '%extreme violence%')",
+    );
+  if (scope === 'mature' && matureMode === 'disturbing')
+    where.push(
+      "(json_extract(data_json, '$.content.disturbing') >= 5 OR LOWER(data_json) LIKE '%\"disturbing\"%')",
+    );
+  if (search.q) {
+    where.push('search_text LIKE ?');
+    params.push(`%${normalizeCatalogQuery(search.q)}%`);
+  }
+  if (search.tier) {
+    where.push('tier = ?');
+    params.push(String(search.tier));
+  }
+  if (search.type) {
+    where.push('type = ?');
+    params.push(String(search.type));
+  }
+  if (search.genre) {
+    where.push('id IN (SELECT title_id FROM title_genres WHERE genre = ?)');
+    params.push(String(search.genre));
+  }
+  if (search.region) {
+    where.push('id IN (SELECT title_id FROM title_origins WHERE region = ?)');
+    params.push(String(search.region));
+  }
+  if (search.country) {
+    where.push('id IN (SELECT title_id FROM title_origins WHERE country = ?)');
+    params.push(String(search.country));
+  }
+  const completedIds = [...progress.entries()]
+    .filter(([, value]) => value.status === 'Watched')
+    .map(([id]) => id);
+  const status = String(search.status || '');
+  if (status) {
+    const matchingIds = [...progress.entries()]
+      .filter(([, value]) => value.status === status)
+      .map(([id]) => id);
+    if (status === 'Not started') {
+      if (progress.size) {
+        where.push(`id NOT IN (${[...progress.keys()].map(() => '?').join(', ')})`);
+        params.push(...progress.keys());
+      }
+    } else if (matchingIds.length) {
+      where.push(`id IN (${matchingIds.map(() => '?').join(', ')})`);
+      params.push(...matchingIds);
+    } else {
+      where.push('0 = 1');
+    }
+  }
+  if (search.hideCompleted === true || search.hideCompleted === 'true') {
+    if (completedIds.length) {
+      where.push(`id NOT IN (${completedIds.map(() => '?').join(', ')})`);
+      params.push(...completedIds);
+    }
+  }
+  if (search.award === 'any') where.push('has_award = 1');
+  if (search.award === 'winner') where.push('data_json LIKE \'%"result":"Winner"%\'');
+  if (search.award === 'nominee') where.push('data_json LIKE \'%"result":"Nominee"%\'');
+  if (search.award?.startsWith('program:')) {
+    where.push('data_json LIKE ?');
+    params.push(`%\"programKey\":\"${String(search.award).slice('program:'.length).replaceAll('%', '')}\"%`);
+  }
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const scoreColumn = {
+    overall: 'overall',
+    production: 'production',
+    story: 'story',
+    emotional: 'emotional',
+  }[sort];
+  const sortParams = [];
+  let sortSql;
+  if (sort === 'rank')
+    sortSql =
+      order === 'desc' ? 'rank IS NULL, rank ASC, title_key ASC' : 'rank IS NULL, rank DESC, title_key ASC';
+  else if (sort === 'year')
+    sortSql = order === 'desc' ? 'year = 0, year DESC, rank ASC' : 'year = 0, year ASC, rank ASC';
+  else if (sort === 'title')
+    sortSql = order === 'desc' ? 'title_key DESC, rank ASC' : 'title_key ASC, rank ASC';
+  else if (sort === 'myrating') {
+    const rated = [...progress.entries()].filter(([, value]) => value.rating > 0);
+    const expression = rated.length
+      ? `CASE id ${rated.map(() => 'WHEN ? THEN ?').join(' ')} ELSE 0 END`
+      : '0';
+    rated.forEach(([id, value]) => sortParams.push(id, value.rating));
+    sortSql = `${expression} = 0, ${expression} ${order === 'desc' ? 'DESC' : 'ASC'}, rank ASC`;
+    sortParams.push(...sortParams);
+  } else sortSql = `${scoreColumn} = 0, ${scoreColumn} ${order === 'desc' ? 'DESC' : 'ASC'}, rank ASC`;
+  const total = database.prepare(`SELECT COUNT(*) AS count FROM titles ${clause}`).get(...params).count;
+  const rows = database
+    .prepare(`SELECT data_json FROM titles ${clause} ORDER BY ${sortSql} LIMIT ? OFFSET ?`)
+    .all(...params, ...sortParams, limit, offset);
+  return {
+    items: rows.map((row) => catalogListItem(JSON.parse(row.data_json))),
+    total,
+    offset,
+    limit,
+    scope,
+    sort,
+    order,
+  };
+}
+
+function catalogFacets(scope = 'master') {
+  const database = openCatalogDatabase();
+  const titleScope = scope === 'mature' ? 'is_mature = 1' : scope === 'kids' ? 'is_kids = 1' : '';
+  const scopedTitles = titleScope ? ` WHERE ${titleScope}` : '';
+  const scopedTitleIds = titleScope ? ` WHERE title_id IN (SELECT id FROM titles${scopedTitles})` : '';
+  const values = (sql) =>
+    database
+      .prepare(sql)
+      .all()
+      .map((row) => row.value)
+      .filter(Boolean);
+  const countBy = (sql) =>
+    Object.fromEntries(
+      database
+        .prepare(sql)
+        .all()
+        .filter((row) => row.value)
+        .map((row) => [row.value, Number(row.count) || 0]),
+    );
+  const countriesByRegion = {};
+  database
+    .prepare(
+      `SELECT DISTINCT region, country FROM title_origins${scopedTitleIds}${scopedTitleIds ? ' AND' : ' WHERE'} country <> '' ORDER BY region, country COLLATE NOCASE`,
+    )
+    .all()
+    .forEach((row) => {
+      if (!countriesByRegion[row.region]) countriesByRegion[row.region] = [];
+      countriesByRegion[row.region].push(row.country);
+    });
+  return {
+    tiers: values(
+      `SELECT DISTINCT tier AS value FROM titles${scopedTitles}${scopedTitles ? ' AND' : ' WHERE'} tier <> ''`,
+    ),
+    types: values(
+      `SELECT DISTINCT type AS value FROM titles${scopedTitles}${scopedTitles ? ' AND' : ' WHERE'} type <> '' ORDER BY value COLLATE NOCASE`,
+    ),
+    genres: values(
+      `SELECT DISTINCT genre AS value FROM title_genres${scopedTitleIds} ORDER BY value COLLATE NOCASE`,
+    ),
+    regions: values(
+      `SELECT DISTINCT region AS value FROM title_origins${scopedTitleIds} ORDER BY value COLLATE NOCASE`,
+    ),
+    countries: values(
+      `SELECT DISTINCT country AS value FROM title_origins${scopedTitleIds} ORDER BY value COLLATE NOCASE`,
+    ),
+    regionCounts: countBy(
+      `SELECT region AS value, COUNT(DISTINCT title_id) AS count FROM title_origins${scopedTitleIds} GROUP BY region`,
+    ),
+    regionCountryCounts: countBy(
+      `SELECT region AS value, COUNT(DISTINCT country) AS count FROM title_origins${scopedTitleIds} GROUP BY region`,
+    ),
+    countriesByRegion,
+  };
+}
+
+catalogTotal = Number(catalogMeta('title_count', '0')) || 0;
 
 const mime = {
   '.html': 'text/html; charset=utf-8',
@@ -1195,18 +2521,24 @@ async function serveStatic(req, res, pathName) {
   try {
     const st = await stat(file);
     if (!st.isFile()) throw new Error('not-file');
-    const data = await readFile(file);
     const ext = extname(file);
-    res.writeHead(200, {
+    const etag = `W/"${st.size}-${Math.trunc(st.mtimeMs)}"`;
+    const headers = {
       'Content-Type': mime[ext] || 'application/octet-stream',
-      'Cache-Control': isCover ? 'public, max-age=31536000, immutable' : 'no-cache',
+      ETag: etag,
+      'Cache-Control': isCover ? 'public, max-age=31536000, immutable' : 'public, max-age=0, must-revalidate',
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
       'X-Frame-Options': 'DENY',
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-      'Content-Security-Policy':
-        "default-src 'self'; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
-    });
+      'Content-Security-Policy': contentSecurityPolicy(),
+    };
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, headers);
+      return res.end();
+    }
+    const data = await readFile(file);
+    res.writeHead(200, headers);
     res.end(data);
   } catch {
     send(res, 404, { error: 'not-found' });
@@ -1248,24 +2580,196 @@ export const server = http.createServer(async (req, res) => {
         catalogToken: isLocal ? UPDATE_TOKEN : '',
         userListSchema: USERLIST_SCHEMA,
         keyId: KEY_ID,
-        artwork: warmState,
-        covers: {
-          cached: coverFileCount(),
-          total: CATALOG_TOTAL,
-          running: warmState.running,
-          processed: warmState.done,
+        sharing: {
+          enabled: SHARE_LINKS_ENABLED,
+          serviceUrl: SHARE_SERVICE_URL,
+          turnstileSiteKey: TURNSTILE_SITE_KEY,
         },
+        coverPack: coverPackStatus(),
       });
     }
-    if (u.pathname === '/api/catalog/corrections/preview' && req.method === 'POST') {
-      const body = await readBody(req);
-      if (!exactKeys(body, new Set(['code'])) || typeof body.code !== 'string')
-        return send(res, 400, { ok: false, error: 'invalid-correction-code' });
-      const catalog = await readCatalogSource();
-      const correction = validateCorrectionPackage(parseCorrectionCode(body.code), catalog);
-      return send(res, 200, { ok: true, correction });
+    if (u.pathname === '/api/catalog/sync' && req.method === 'POST') {
+      if (
+        !isTrustedLocalRequest(req) ||
+        !isSameOriginRequest(req) ||
+        req.headers['x-uai-catalog-token'] !== UPDATE_TOKEN
+      )
+        return send(res, 403, { ok: false, error: 'catalog-sync-forbidden' });
+      try {
+        return send(res, 200, { ok: true, ...(await syncCatalogFromCoverStorage()) });
+      } catch (error) {
+        return send(res, 502, { ok: false, error: error?.message || 'catalog-sync-failed' });
+      }
     }
-    if (u.pathname === '/api/catalog/corrections/apply' && req.method === 'POST') {
+    if (u.pathname === '/api/covers/status' && req.method === 'GET') {
+      const remote = await getRemoteCoverPack({ force: u.searchParams.get('refresh') === '1' });
+      return send(res, 200, { ok: true, ...coverPackStatus(remote) });
+    }
+    if (u.pathname === '/api/covers/artwork-index' && req.method === 'GET')
+      return send(res, 200, {
+        ok: true,
+        installed: Boolean(validCoverPackManifest(coverPackState?.manifest)),
+        items: packageArtworkIndex(),
+      });
+    if (u.pathname === '/api/covers/install-status' && req.method === 'GET')
+      return send(res, 200, { ok: true, job: coverPackInstallJob });
+    if (u.pathname === '/api/covers/install' && req.method === 'POST') {
+      if (!isTrustedLocalRequest(req) || !isSameOriginRequest(req))
+        return send(res, 403, { ok: false, error: 'cover-pack-install-forbidden' });
+      return send(res, 202, { ok: true, job: startCoverPackInstall() });
+    }
+    if (u.pathname === '/api/catalog/bootstrap' && req.method === 'GET') {
+      const page = catalogPage({ scope: u.searchParams.get('scope') || 'master', limit: 60 });
+      return send(res, 200, {
+        ok: true,
+        sourceHash: catalogMeta('source_hash'),
+        generatedAt: catalogMeta('generated_at'),
+        total: catalogTotal,
+        filmCount: Number(catalogMeta('film_count', '0')) || 0,
+        collectionCount: Number(catalogMeta('collection_count', '0')) || 0,
+        franchiseCount: Number(catalogMeta('franchise_count', '0')) || 0,
+        idMigrations: catalogEntity('idMigrations', {}),
+        facets: catalogFacets(),
+        scopeFacets: {
+          mature: catalogFacets('mature'),
+          kids: catalogFacets('kids'),
+        },
+        page,
+      });
+    }
+    if (u.pathname === '/api/catalog/titles' && req.method === 'GET') {
+      const search = Object.fromEntries(u.searchParams.entries());
+      return send(res, 200, { ok: true, ...catalogPage(search), sourceHash: catalogMeta('source_hash') });
+    }
+    if (u.pathname === '/api/catalog/query' && req.method === 'POST') {
+      if (!isSameOriginRequest(req)) return send(res, 403, { ok: false, error: 'catalog-query-forbidden' });
+      const body = await readBody(req, MAX_LOCAL_DATA_BODY);
+      if (
+        !body ||
+        typeof body !== 'object' ||
+        Array.isArray(body) ||
+        !body.query ||
+        typeof body.query !== 'object'
+      )
+        return send(res, 400, { ok: false, error: 'invalid-catalog-query' });
+      return send(res, 200, {
+        ok: true,
+        ...catalogPage(body.query, body.progress),
+        sourceHash: catalogMeta('source_hash'),
+      });
+    }
+    if (u.pathname.startsWith('/api/catalog/title/') && req.method === 'GET') {
+      const id = decodeURIComponent(u.pathname.slice('/api/catalog/title/'.length));
+      if (!id || id.length > 240) return send(res, 400, { ok: false, error: 'invalid-title-id' });
+      const row = openCatalogDatabase().prepare('SELECT data_json FROM titles WHERE id = ?').get(id);
+      return row
+        ? send(res, 200, {
+            ok: true,
+            item: JSON.parse(row.data_json),
+            sourceHash: catalogMeta('source_hash'),
+          })
+        : send(res, 404, { ok: false, error: 'title-not-found' });
+    }
+    if (u.pathname === '/api/catalog/entities' && req.method === 'GET') {
+      const kind = u.searchParams.get('kind');
+      if (!['collections', 'franchises'].includes(kind))
+        return send(res, 400, { ok: false, error: 'invalid-catalog-entity' });
+      return send(res, 200, { ok: true, kind, data: catalogEntity(kind, []) });
+    }
+    if (u.pathname === '/api/local-user-data' && req.method === 'GET') {
+      if (!isTrustedLocalRequest(req)) return send(res, 403, { ok: false, error: 'local-data-forbidden' });
+      return send(res, 200, { ok: true, storage: await readLocalUserData() });
+    }
+    if (u.pathname === '/api/local-user-data' && req.method === 'POST') {
+      if (!isTrustedLocalRequest(req) || !isSameOriginRequest(req))
+        return send(res, 403, { ok: false, error: 'local-data-forbidden' });
+      const body = await readBody(req, MAX_LOCAL_DATA_BODY);
+      if (
+        !exactKeys(body, new Set(['storage'])) ||
+        !body.storage ||
+        typeof body.storage !== 'object' ||
+        Array.isArray(body.storage) ||
+        Object.keys(body.storage).some((key) => !key.startsWith('uai:'))
+      )
+        return send(res, 400, { ok: false, error: 'invalid-local-data' });
+      await writeLocalUserData(body.storage);
+      return send(res, 200, { ok: true });
+    }
+    if (u.pathname === '/api/local-cache-data' && req.method === 'GET') {
+      if (!isTrustedLocalRequest(req)) return send(res, 403, { ok: false, error: 'local-data-forbidden' });
+      return send(res, 200, { ok: true, storage: await readLocalCacheData() });
+    }
+    if (u.pathname === '/api/local-cache-data' && req.method === 'POST') {
+      if (!isTrustedLocalRequest(req) || !isSameOriginRequest(req))
+        return send(res, 403, { ok: false, error: 'local-data-forbidden' });
+      const body = await readBody(req, MAX_LOCAL_DATA_BODY);
+      if (
+        !exactKeys(body, new Set(['storage'])) ||
+        !body.storage ||
+        typeof body.storage !== 'object' ||
+        Array.isArray(body.storage) ||
+        Object.keys(body.storage).some((key) => !key.startsWith('uai:'))
+      )
+        return send(res, 400, { ok: false, error: 'invalid-local-data' });
+      await writeLocalCacheData(body.storage);
+      return send(res, 200, { ok: true });
+    }
+    if (u.pathname === '/api/editor-reviews/official/preview' && req.method === 'POST') {
+      if (
+        !isTrustedLocalRequest(req) ||
+        !isSameOriginRequest(req) ||
+        req.headers['x-uai-catalog-token'] !== UPDATE_TOKEN
+      )
+        return send(res, 403, { ok: false, error: 'catalog-write-forbidden' });
+      const body = await readBody(req, 2 * 1024 * 1024);
+      if (!exactKeys(body, new Set(['package'])) || typeof body.package !== 'string')
+        return send(res, 400, { ok: false, error: 'invalid-editor-review' });
+      try {
+        return send(res, 200, { ok: true, review: await previewOfficialEditorReview(body.package) });
+      } catch (error) {
+        return send(res, 400, { ok: false, error: error?.message || 'invalid-editor-review' });
+      }
+    }
+    if (u.pathname === '/api/editor-reviews/official/apply' && req.method === 'POST') {
+      if (
+        !isTrustedLocalRequest(req) ||
+        !isSameOriginRequest(req) ||
+        req.headers['x-uai-catalog-token'] !== UPDATE_TOKEN
+      )
+        return send(res, 403, { ok: false, error: 'catalog-write-forbidden' });
+      const body = await readBody(req, 2 * 1024 * 1024);
+      if (!exactKeys(body, new Set(['package'])) || typeof body.package !== 'string')
+        return send(res, 400, { ok: false, error: 'invalid-editor-review' });
+      try {
+        return send(res, 200, { ok: true, result: await applyOfficialEditorReview(body.package) });
+      } catch (error) {
+        return send(res, 400, { ok: false, error: error?.message || 'editor-review-apply-failed' });
+      }
+    }
+    if (u.pathname === '/api/community-reviews/apply' && req.method === 'POST') {
+      if (
+        !isTrustedLocalRequest(req) ||
+        !isSameOriginRequest(req) ||
+        req.headers['x-uai-catalog-token'] !== UPDATE_TOKEN
+      )
+        return send(res, 403, { ok: false, error: 'catalog-write-forbidden' });
+      const body = await readBody(req, 1024 * 1024);
+      if (!exactKeys(body, new Set(['package'])) || typeof body.package !== 'string')
+        return send(res, 400, { ok: false, error: 'invalid-community-review' });
+      try {
+        return send(res, 200, { ok: true, result: await applyCommunityRecommendationReview(body.package) });
+      } catch (error) {
+        return send(res, 400, { ok: false, error: error?.message || 'community-review-apply-failed' });
+      }
+    }
+    if (u.pathname === '/api/catalog/release-updates/preview' && req.method === 'POST') {
+      const body = await readBody(req);
+      if (!exactKeys(body, new Set(['package'])) || !body.package || typeof body.package !== 'object')
+        return send(res, 400, { ok: false, error: 'invalid-release-update-package' });
+      const catalog = await readCatalogSource();
+      return send(res, 200, { ok: true, preview: previewReleaseUpdatePackage(catalog, body.package) });
+    }
+    if (u.pathname === '/api/catalog/release-updates/apply' && req.method === 'POST') {
       if (
         !isTrustedLocalRequest(req) ||
         !isSameOriginRequest(req) ||
@@ -1273,13 +2777,22 @@ export const server = http.createServer(async (req, res) => {
       )
         return send(res, 403, { ok: false, error: 'catalog-write-forbidden' });
       const body = await readBody(req);
-      if (!exactKeys(body, new Set(['code'])) || typeof body.code !== 'string')
-        return send(res, 400, { ok: false, error: 'invalid-correction-code' });
-      const correction = await applyCatalogCorrectionCode(body.code);
+      if (
+        !exactKeys(body, new Set(['package', 'selectedUpdateIds'])) ||
+        !body.package ||
+        typeof body.package !== 'object' ||
+        !Array.isArray(body.selectedUpdateIds)
+      )
+        return send(res, 400, { ok: false, error: 'invalid-release-update-package' });
+      const result = await applyReleaseUpdates(body.package, body.selectedUpdateIds);
+      const unranked = result.applied.filter(
+        (entry) => !result.catalog.items.find((item) => item.id === entry.id)?.rank,
+      );
       return send(res, 200, {
         ok: true,
-        applied: correction.entries.length,
-        additions: correction.entries.filter((entry) => entry.operation === 'add').length,
+        applied: result.applied,
+        summary: result.summary,
+        unranked: unranked.length,
       });
     }
     if (u.pathname === '/api/update' && req.method === 'POST') {
@@ -1315,7 +2828,19 @@ export const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/userlist/verify' && req.method === 'POST') {
       const body = await readBody(req);
       const verified = verifyCode(body.code);
-      return send(res, 200, { ok: true, ...verified });
+      const lookup = openCatalogDatabase().prepare('SELECT title, year FROM titles WHERE id = ?');
+      const catalogTitles = Object.fromEntries(
+        [
+          ...new Set([
+            ...verified.payload.opinions.map((opinion) => opinion.id),
+            ...verified.payload.completed,
+          ]),
+        ].map((id) => {
+          const row = lookup.get(id);
+          return [id, row ? { title: row.title, year: row.year } : null];
+        }),
+      );
+      return send(res, 200, { ok: true, ...verified, catalogTitles });
     }
     if (u.pathname === '/api/meta/batch' && req.method === 'POST') {
       const body = await readBody(req);
@@ -1327,15 +2852,18 @@ export const server = http.createServer(async (req, res) => {
           !raw ||
           typeof raw !== 'object' ||
           Array.isArray(raw) ||
-          Object.keys(raw).some((k) => !['key', 'kind', 'title'].includes(k))
+          Object.keys(raw).some((k) => !['key', 'kind', 'title', 'externalId'].includes(k))
         )
           return send(res, 400, { ok: false, error: 'invalid-batch' });
         const key = safeText(raw.key, 180, true),
           title = safeText(raw.title, 180, true),
-          kind = raw.kind;
+          kind = raw.kind,
+          externalId = safeText(raw.externalId || '', 80, false);
         if (!key || !title || !['anilist', 'tvmaze', 'wiki'].includes(kind))
           return send(res, 400, { ok: false, error: 'invalid-batch' });
-        items.push({ key, kind, title });
+        if (externalId && !/^\d+$/.test(externalId))
+          return send(res, 400, { ok: false, error: 'invalid-batch' });
+        items.push({ key, kind, title, externalId });
       }
       const results = await getMetadataBatch(items);
       return send(res, 200, { ok: true, results });
@@ -1353,7 +2881,21 @@ export const server = http.createServer(async (req, res) => {
       if (!title) return send(res, 400, { error: 'invalid-title' });
       if (!['anilist', 'tvmaze'].includes(kind))
         return send(res, 400, { error: 'unsupported-metadata-kind' });
-      const data = kind === 'anilist' ? await getAniListSeries(title) : await getTVMazeSeries(title);
+      const provider = u.searchParams.get('provider') || '';
+      const id = safeText(u.searchParams.get('id') || '', 32, false);
+      if (provider && !['anilist', 'tvmaze'].includes(provider))
+        return send(res, 400, { error: 'unsupported-metadata-kind' });
+      if (id && !/^\d+$/.test(id)) return send(res, 400, { error: 'invalid-series-id' });
+      const data = await getSeriesWithFallback(kind, title, { provider, id });
+      return send(res, 200, { ok: true, data });
+    }
+    if (u.pathname === '/api/series/candidates' && req.method === 'GET') {
+      const kind = u.searchParams.get('kind') || '';
+      const title = safeText(u.searchParams.get('title') || '', 180, true);
+      if (!title) return send(res, 400, { ok: false, error: 'invalid-title' });
+      if (!['anilist', 'tvmaze'].includes(kind))
+        return send(res, 400, { ok: false, error: 'unsupported-metadata-kind' });
+      const data = await getSeriesCandidates(kind, title);
       return send(res, 200, { ok: true, data });
     }
     if (u.pathname === '/api/resolve' && req.method === 'GET') {
@@ -1384,12 +2926,12 @@ export const server = http.createServer(async (req, res) => {
       'invalid-created',
       'body-too-large',
       'invalid-batch',
-      'invalid-correction-code',
-      'invalid-correction-package',
-      'unsupported-correction-package',
-      'unknown-catalog-title',
-      'catalog-correction-conflict',
-      'empty-correction-package',
+      'invalid-release-update-package',
+      'unsupported-release-update-package',
+      'release-update-add-missing-fields',
+      'unreleased-editorial-update',
+      'invalid-release-update-selection',
+      'release-update-not-applicable',
     ].includes(msg)
       ? 400
       : 500;
@@ -1402,9 +2944,6 @@ export function startServer(port = PORT, host = HOST) {
     const address = server.address();
     const activePort = typeof address === 'object' && address ? address.port : port;
     console.log(`Ultimate Animation Index on http://localhost:${activePort} · UserList key ${KEY_ID}`);
-    setTimeout(() => {
-      if (process.env.UAI_SKIP_WARM !== '1') warmCatalogArtwork();
-    }, 900);
   });
 }
 

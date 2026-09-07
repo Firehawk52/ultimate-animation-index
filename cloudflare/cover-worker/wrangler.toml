@@ -1,0 +1,7 @@
+name = "covers"
+main = "src/index.js"
+compatibility_date = "2026-09-02"
+
+[[r2_buckets]]
+binding = "COVERS"
+bucket_name = "ultimate-anime-index"

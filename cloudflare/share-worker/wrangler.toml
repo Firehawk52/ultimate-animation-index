@@ -1,0 +1,18 @@
+name = "ultimate-animation-index-shares"
+main = "src/index.js"
+compatibility_date = "2026-08-26"
+
+# Create these bindings in the Cloudflare dashboard when deploying.
+# [[r2_buckets]]
+# binding = "SHARES"
+# bucket_name = "ultimate-animation-index-shares"
+
+# [[ratelimits]]
+# name = "PUBLISH_LIMIT"
+# namespace_id = "<publish namespace id>"
+# simple = { limit = 5, period = 60 }
+
+# [[ratelimits]]
+# name = "READ_LIMIT"
+# namespace_id = "<read namespace id>"
+# simple = { limit = 60, period = 60 }
